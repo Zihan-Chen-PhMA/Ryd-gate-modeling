@@ -108,7 +108,8 @@ gs_occ_list = []
 for i in range(len(time_list)):
     state_temp = state_list[i]
     state_temp_mat = state_temp.data.toarray()
-    gs_occ_list.append(state_temp_mat[3][3])
+    gs_occ_list.append(np.real_if_close(
+                        state_temp_mat[3][3]))
 peaks, _ = signal.find_peaks(gs_occ_list)
 peaks = peaks.tolist()
 peaks = peaks
@@ -116,13 +117,16 @@ plt.figure(figsize=(16,5))
 t_list = [i for i in time_list]
 peaks_time = [t_list[i] for i in peaks]
 peaks_val = [gs_occ_list[i] for i in peaks]
-plt.plot(t_list,gs_occ_list)
-plt.plot(peaks_time, peaks_val,'x')
+plt.plot(t_list,gs_occ_list,
+          color='#3366CC',lw=2.7)
+
+plt.plot(peaks_time, peaks_val,'x',
+          color='#B82E2E',lw=3,markersize=8)
 
 decay_param, _ = optimize.curve_fit(exp_decay, 
                     peaks_time, peaks_val)
 
 plt.plot(time_list, exp_decay(time_list, decay_param),
-         '--')
+         '--',lw=2.7,color='#109618')
 
 
