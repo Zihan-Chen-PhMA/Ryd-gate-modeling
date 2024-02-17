@@ -9,6 +9,74 @@ import copy as copy
 
 
 
+class PauliTwo():
+
+    def __init__(self, phase_0, phase_1, phase_2):
+        self.phase_0 = phase_0
+        self.phase_1 = phase_1
+        self.phase_2 = phase_2
+        self.phase_dict = {'00': self.phase_0,
+                           '01': self.phase_1,
+                           '10': self.phase_1,
+                           '11': self.phase_2}
+
+    def basis_vec_2d(self,index):
+        if index == '00':
+            return np.reshape(np.array([1,0,0,0]),
+                              (-1,1))
+        elif index == '01':
+            return np.reshape(np.array([0,1,0,0]),
+                              (-1,1))
+        elif index == '10':
+            return np.reshape(np.array([0,0,1,0]),
+                              (-1,1))
+        elif index == '11':
+            return np.reshape(np.array([0,0,0,1]),
+                              (-1,1))
+    
+    def basis_dual_vec_2d(self,index):
+        if index == '00':
+            return np.reshape(np.array([1,0,0,0]),
+                              (1,-1))
+        elif index == '01':
+            return np.reshape(np.array([0,1,0,0]),
+                              (1,-1))
+        elif index == '10':
+            return np.reshape(np.array([0,0,1,0]),
+                              (1,-1))
+        elif index == '11':
+            return np.reshape(np.array([0,0,0,1]),
+                              (1,-1))
+    
+    def basis_dm(self, index, index_dual):
+        basis_2d = self.basis_vec_2d(index)
+        basis_dual_2d = self.basis_dual_vec_2d(index_dual)
+        return np.matmul(basis_2d,basis_dual_2d)
+    
+
+    def pp_dm(self):
+        """
+        DM for |++> state
+        """
+        basis_vec = np.array([0.5,0.5,0.5,0.5])
+        basis_2d = np.reshape(basis_vec,(-1,1))
+        basis_dual_2d = np.reshape(basis_vec,(1,-1))
+        return np.matmul(basis_2d,basis_dual_2d)
+    
+    def bell_pp_dm(self):
+        u_mat = np.diag([1, np.exp(1j*self.phase_1),
+                         np.exp(1j*self.phase_1),
+                         np.exp(1j*self.phase_2)])
+        u_mat_dag = np.transpose(np.conjugate(u_mat))
+        dm_temp = np.matmul(u_mat,self.pp_dm())
+        dm_ret = np.matmul(dm_temp,u_mat_dag)
+        return dm_ret
+
+
+
+
+
+
 class CZ():
     """
     This class is used for handling calculations of CZ gate
@@ -114,9 +182,197 @@ class CZ():
         self.delta = 0
         self.delta_m = self.ryd_zeeman_shift + self.delta
         self.temperature = 300 
-
+        self.mid_state_decay = 1
+        self.ryd_decay = 1
+        self.ryd_garbage = 1
 
         pass
+
+    def Fidelity_bell(self, delta_ratio, t_gate,
+                        phase_jump, phase_1, phase_2,
+                        phase_0=0):
+        """
+        Test
+        """
+        pauli_two = PauliTwo(phase_0, phase_1, phase_2)
+        state_init = self._matrix_embed(10,pauli_two.pp_dm())
+        cz_result = self.CZ_real_all_params(delta_ratio,
+                            t_gate, phase_jump, state_init)
+        ideal_result = self._matrix_embed(10,
+                            pauli_two.bell_pp_dm())
+        fidel = np.real_if_close(np.trace(
+                    np.matmul(ideal_result, cz_result)))
+        return fidel
+
+
+    def Fidelity_avg(self, delta_ratio, t_gate,
+                        phase_jump, phase_1, phase_2,
+                        phase_0=0):
+        """
+        Test
+        """
+        fidel = 0
+        basis = ['00', '01', '10', '11']
+        pauli_two = PauliTwo(phase_0, phase_1, phase_2)
+        for item, index in zip(basis, range(len(basis))):
+            for item_dual, index_dual in zip(basis,range(len(basis))):
+                print('Fidelity extraction process: ',
+                        index*4+index_dual+1,'/16')
+                if item == item_dual:
+                    state_init = self._matrix_embed(10,
+                        pauli_two.basis_dm(item,item_dual))
+                    cz_result = self.CZ_real_all_params(
+                        delta_ratio, t_gate, phase_jump,
+                        state_init)
+                    fidel_temp = 2*np.trace(np.matmul(
+                        state_init, cz_result
+                    ))
+                    fidel = fidel + fidel_temp
+                else:
+                    state_init = self._matrix_embed(10,
+                        pauli_two.basis_dm(item,item_dual))
+                    cz_result = self.CZ_real_all_params(
+                        delta_ratio, t_gate, phase_jump,
+                        state_init)
+                    state_fid = self._matrix_embed(10,
+                        pauli_two.basis_dm(item_dual,item))
+                    fidel_temp = np.exp(-1j*(
+                        pauli_two.phase_dict[item]-
+                        pauli_two.phase_dict[item_dual]
+                        ))*np.trace(
+                            np.matmul(state_fid, cz_result))
+                    fidel = fidel + fidel_temp
+        return np.real(fidel)/20
+                    
+                    
+
+
+    def CZ_real_all_params(self, delta_ratio, t_gate,
+                phase_jump, state_mat) -> np.ndarray:
+        """
+        Test
+        """
+        delta = -delta_ratio*self.rabi_eff
+        exp_phase = np.exp(1j*phase_jump)
+        
+        mid_state_decay = np.sqrt(1/(self.atom.getStateLifetime(6,
+                                        1,1.5)))*self.mid_state_decay
+        mid_garb_decay = np.sqrt(1/(self.atom.getStateLifetime(
+                                    6,1,0.5)))*self.mid_state_decay
+        ryd_state_decay = np.sqrt(1/(self.atom.getStateLifetime(
+            self.ryd_level, 0, 0.5, 300, self.ryd_level+30
+        )))*self.ryd_decay
+
+        ham_tq_mat = np.zeros((100,100),dtype=np.complex128)
+        ham_sq_mat = np.zeros((10,10),dtype=np.complex128)
+        ham_sq_mat[2][2] = self.Delta
+        ham_sq_mat[3][3] = self.Delta
+        ham_sq_mat[4][4] = delta
+        ham_sq_mat[5][5] = delta + self.ryd_zeeman_shift
+        ham_sq_mat[2][1] = self.rabi_420/2
+        ham_sq_mat[1][2] = np.conjugate(ham_sq_mat[2][1])
+        ham_sq_mat[3][1] = self.rabi_420_garbage/2
+        ham_sq_mat[1][3] = np.conjugate(ham_sq_mat[3][1])
+        ham_sq_mat[4][2] = self.rabi_1013/2
+        ham_sq_mat[2][4] = np.conjugate(ham_sq_mat[4][2])
+        ham_sq_mat[5][3] = (self.rabi_1013_garbage*
+                        self.ryd_garbage)/2
+        ham_sq_mat[3][5] = np.conjugate(ham_sq_mat[5][3])
+        ham_tq_mat = ham_tq_mat + np.kron(np.eye(10),ham_sq_mat)
+        ham_tq_mat = ham_tq_mat + np.kron(ham_sq_mat,np.eye(10))
+        ham_vdw_mat = np.zeros((10,10))
+        ham_vdw_mat[4][4] = 1
+        ham_tq_mat = ham_tq_mat + self.v_ryd*np.kron(ham_vdw_mat,
+                                                ham_vdw_mat)
+        ham_tq_oper = Qobj(ham_tq_mat)
+
+        mid_state_decay_mat = self._sq_mat_gen(
+            10,6,2)*mid_state_decay
+        mid_garb_decay_mat = self._sq_mat_gen(
+            10,7,3)*mid_garb_decay
+        ryd_state_decay_mat = self._sq_mat_gen(
+            10,8,4)*ryd_state_decay
+        ryd_garb_decay_mat = self._sq_mat_gen(
+            10,9,5)*ryd_state_decay
+
+        c_ops = []  # Used for decays. 
+ 
+        for i in range(0,10):
+            mid_decay_temp = np.kron(self._sq_mat_gen(10,i,i),
+                                     mid_state_decay_mat)
+            mid_decay_oper = Qobj(mid_decay_temp)
+            c_ops.append(mid_decay_oper)
+            mid_garb_temp = np.kron(self._sq_mat_gen(10,i,i),
+                                    mid_garb_decay_mat)
+            mid_garb_oper = Qobj(mid_garb_temp)
+            c_ops.append(mid_garb_oper)
+            ryd_temp = np.kron(self._sq_mat_gen(10,i,i),
+                               ryd_state_decay_mat)
+            ryd_oper = Qobj(ryd_temp)
+            c_ops.append(ryd_oper)
+            ryd_garb_temp = np.kron(self._sq_mat_gen(10,i,i),
+                                    ryd_garb_decay_mat)
+            ryd_garb_oper = Qobj(ryd_garb_temp)
+            c_ops.append(ryd_garb_oper)
+
+            mid_decay_temp = np.kron(mid_state_decay_mat,
+                                     self._sq_mat_gen(10,i,i))
+            mid_decay_oper = Qobj(mid_decay_temp)
+            c_ops.append(mid_decay_oper)
+            mid_garb_temp = np.kron(mid_garb_decay_mat,
+                                    self._sq_mat_gen(10,i,i)
+                                    )
+            mid_garb_oper = Qobj(mid_garb_temp)
+            c_ops.append(mid_garb_oper)
+            ryd_temp = np.kron(ryd_state_decay_mat,
+                               self._sq_mat_gen(10,i,i)
+                               )
+            ryd_oper = Qobj(ryd_temp)
+            c_ops.append(ryd_oper)
+            ryd_garb_temp = np.kron(ryd_garb_decay_mat,
+                                    self._sq_mat_gen(10,i,i)
+                                    )
+            ryd_garb_oper = Qobj(ryd_garb_temp)
+            c_ops.append(ryd_garb_oper)
+
+        state_init_oper = Qobj(state_mat)
+
+        t_list = np.linspace(0,t_gate,5000)
+
+        result_mid = mesolve(ham_tq_oper, state_init_oper,
+                             t_list,c_ops=c_ops)
+        mid_state_oper = result_mid.states[-1]
+
+        ham_tq_jump_mat = np.zeros((100,100),dtype=np.complex128)
+        ham_sq_mat = np.zeros((10,10),dtype=np.complex128)
+        ham_sq_mat[2][2] = self.Delta
+        ham_sq_mat[3][3] = self.Delta
+        ham_sq_mat[4][4] = delta
+        ham_sq_mat[5][5] = delta + self.ryd_zeeman_shift
+        ham_sq_mat[2][1] = self.rabi_420*exp_phase/2
+        ham_sq_mat[1][2] = np.conjugate(ham_sq_mat[2][1])
+        ham_sq_mat[3][1] = self.rabi_420_garbage*exp_phase/2
+        ham_sq_mat[1][3] = np.conjugate(ham_sq_mat[3][1])
+        ham_sq_mat[4][2] = self.rabi_1013/2
+        ham_sq_mat[2][4] = np.conjugate(ham_sq_mat[4][2])
+        ham_sq_mat[5][3] = self.rabi_1013_garbage/2
+        ham_sq_mat[3][5] = np.conjugate(ham_sq_mat[5][3])
+        ham_tq_jump_mat = ham_tq_jump_mat + np.kron(np.eye(10),
+                                                    ham_sq_mat)
+        ham_tq_jump_mat = ham_tq_jump_mat + np.kron(ham_sq_mat,
+                                                    np.eye(10))
+        ham_vdw_mat = np.zeros((10,10))
+        ham_vdw_mat[4][4] = 1
+        ham_tq_jump_mat = ham_tq_jump_mat + self.v_ryd*np.kron(
+                                                ham_vdw_mat,
+                                                ham_vdw_mat)
+        ham_tq_jump_oper = Qobj(ham_tq_jump_mat)
+
+        result_end = mesolve(ham_tq_jump_oper, mid_state_oper,
+                             t_list)
+        end_state = result_end.states[-1]
+        return end_state.data.toarray()
+
 
     def CZ_real(self, delta_ratio, state_mat) -> np.ndarray:
         """
@@ -578,7 +834,9 @@ class CZ():
 
             
 cz_test = CZ()
-
+cz_test.mid_state_decay = 0
+cz_test.ryd_decay = 0
+cz_test.ryd_garbage = 0
 
 
 # Scanning delta_ratio to approximately locate 
@@ -638,6 +896,7 @@ cz_test = CZ()
 # time consuming.) 
 
 delta_opt = 0.24999835
+t_gate, phase_opt, fid = cz_test._gate_params(delta_opt)
 phase_1, phase_2, fid = cz_test.CZ_ptcol_ideal_phase(delta_opt)
 U_ideal_small = np.zeros((4,4),dtype=np.complex128)
 U_ideal_small[0][0] = 1
@@ -646,6 +905,11 @@ U_ideal_small[2][2] = np.exp(1j*phase_1)
 U_ideal_small[3][3] = np.exp(1j*(2*phase_1+np.pi))
 
 U_ideal = cz_test._matrix_embed(10, U_ideal_small)
+
+fidel_avg = cz_test.Fidelity_bell(delta_opt, t_gate,
+        phase_opt, phase_1, phase_2)
+
+print(fidel_avg)
 
 
 # A special case for state_haar_small, which is invoked 
@@ -658,25 +922,25 @@ U_ideal = cz_test._matrix_embed(10, U_ideal_small)
 # ])
 
 
-num_rounds = 200
+# num_rounds = 200
 
-fidel_list = []
+# fidel_list = []
 
-for i in range(0,num_rounds):
-    state_haar_small = cz_test._two_qubit_state_haar_dm()
-    state_haar = cz_test._matrix_embed(10, state_haar_small)
-    state_real_out = cz_test.CZ_real(delta_opt, state_haar)
-    state_ideal_mid = np.matmul(U_ideal,state_haar)
-    state_ideal_out = np.matmul(state_ideal_mid, 
-                        np.conjugate(np.transpose(U_ideal)))
+# for i in range(0,num_rounds):
+#     state_haar_small = cz_test._two_qubit_state_haar_dm()
+#     state_haar = cz_test._matrix_embed(10, state_haar_small)
+#     state_real_out = cz_test.CZ_real(delta_opt, state_haar)
+#     state_ideal_mid = np.matmul(U_ideal,state_haar)
+#     state_ideal_out = np.matmul(state_ideal_mid, 
+#                         np.conjugate(np.transpose(U_ideal)))
 
-    fidel = np.trace(np.matmul(state_real_out, state_ideal_out))
-    fidel_real = np.real_if_close(fidel)
-    print(fidel_real)
-    fidel_list.append(fidel_real)
+#     fidel = np.trace(np.matmul(state_real_out, state_ideal_out))
+#     fidel_real = np.real_if_close(fidel)
+#     print(fidel_real)
+#     fidel_list.append(fidel_real)
 
-avg_fidelity = np.sum(fidel_list)/num_rounds
-min_fidelity = min(fidel_list)
+# avg_fidelity = np.sum(fidel_list)/num_rounds
+# min_fidelity = min(fidel_list)
 
 
 # Avg fidelity: 0.9934
