@@ -115,8 +115,13 @@ peaks = peaks.tolist()
 peaks = peaks
 plt.figure(figsize=(16,5))
 t_list = [i for i in time_list]
+t_list = np.array(t_list)*10**6
 peaks_time = [t_list[i] for i in peaks]
 peaks_val = [gs_occ_list[i] for i in peaks]
+peaks_time_arr = np.array(peaks_time)
+peaks_time_arr = peaks_time_arr - peaks_time[0]
+peaks_val_arr = np.array(peaks_val)
+peaks_val_arr = peaks_val_arr/peaks_val[0]
 plt.plot(t_list,gs_occ_list,
           color='#3366CC',lw=2.7)
 
@@ -124,9 +129,17 @@ plt.plot(peaks_time, peaks_val,'x',
           color='#B82E2E',lw=3,markersize=8)
 
 decay_param, _ = optimize.curve_fit(exp_decay, 
-                    peaks_time, peaks_val)
+                    peaks_time_arr,
+                    peaks_val_arr)
 
-plt.plot(time_list, exp_decay(time_list, decay_param),
+plt.plot(t_list, (peaks_val[0]*
+          exp_decay(t_list-peaks_time[0], decay_param)),
          '--',lw=2.7,color='#109618')
+plt.xlabel(r"time $(\mu s)$")
+plt.ylabel(r"Rydberg state occupation probability")
+plt.grid(True)
+plt.savefig('rabi_decay.pdf')
 
+print(peaks_val[0])
 
+# decay rate is array([0.00928182])

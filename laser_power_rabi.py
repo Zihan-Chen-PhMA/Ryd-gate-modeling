@@ -46,12 +46,12 @@ laser_1013 = Laser(power, height, width)
 # the non-diagonal elements of the Hamiltonian. 
 # However, Lukin set those non-diagonal elements as
 # Omega/2. 
-# gs_factor = np.sqrt(3)/2
+gs_factor = np.sqrt(3)/(2*np.sqrt(2))
 dp_moment_au_to_si = (constants.e*
             constants.physical_constants['Bohr radius'][0])
 # In ARC, dipole moment has unit [e*r_bohr]
 
-omega = (laser_1013.prefactor*dp_moment_au_to_si*
+omega = (laser_1013.prefactor*dp_moment_au_to_si*gs_factor*
             atom.getDipoleMatrixElement(5,0,0.5,0.5,
                                         6,1,1.5,1.5,
                                         1))

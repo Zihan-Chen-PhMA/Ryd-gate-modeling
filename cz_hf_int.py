@@ -11,7 +11,7 @@ from scipy import constants
 from scipy import interpolate
 import warnings
 
-from blackman import blackman_pulse
+from blackman import blackman_pulse, blackman_pulse_sqrt
 from utils import color_dict
 
 class PauliTwo():
@@ -526,7 +526,7 @@ class CZ():
             phase_420 = np.exp(-1j*(phase_amp*
                             np.cos(omega*t+phase_init)+delta*t))
             phase_420_conj = np.conjugate(phase_420)
-            amplitude = blackman_pulse(t, self.t_rise, t_gate)
+            amplitude = blackman_pulse_sqrt(t, self.t_rise, t_gate)
             # amplitude = 1
             ham_tq_mat = np.zeros((49,49),dtype=np.complex128)
             ham_tq_mat = ham_tq_mat + (self.tq_ham_const + 
@@ -564,7 +564,7 @@ class CZ():
             phase_420 = np.exp(-1j*(phase_amp*
                             np.cos(omega*t+phase_init)+delta*t))
             phase_420_conj = np.conjugate(phase_420)
-            amplitude = blackman_pulse(t, self.t_rise, t_gate)
+            amplitude = blackman_pulse_sqrt(t, self.t_rise, t_gate)
             # amplitude = 1
             ham_tq_mat = np.zeros((49,49),dtype=np.complex128)
             ham_tq_mat = ham_tq_mat + (self.tq_ham_const_temp + 
@@ -608,7 +608,7 @@ class CZ():
             phase_420 = np.exp(-1j*(phase_amp*
                             np.cos(omega*t+phase_init)+delta*t))
             phase_420_conj = np.conjugate(phase_420)
-            amplitude = blackman_pulse(t, self.t_rise, t_gate)
+            amplitude = blackman_pulse_sqrt(t, self.t_rise, t_gate)
             # amplitude = 1
             ham_tq_mat = np.zeros((49,49),dtype=np.complex128)
             ham_tq_mat = ham_tq_mat + (self.tq_ham_const_temp + 
@@ -788,13 +788,13 @@ cz_test = CZ(mid_state_decay=1, ryd_decay=1, ryd_garbage=1, temp=temp)
 # print(fidel_bell)
 
 
-# fidel_list = cz_test.Fidelity_bell_mod_thermal(8.91542996e-01,
-#                 1.387220109e+00*cz_test.rabi_eff,
-#                 -1.975647263e+00, -6.0834125323e-02*cz_test.rabi_eff,
-#                 1.534627726e+00*cz_test.time_scale,
-#                 1.7193658e+00,(2*1.7193658e+00)+np.pi)
+fidel_list = cz_test.Fidelity_bell_mod_thermal(8.958024327e-01,
+                1.38171690e+00*cz_test.rabi_eff,
+                -1.86536976e+00, -6.43545721e-02*cz_test.rabi_eff,
+                1.5152934673e+00*cz_test.time_scale,
+                1.710546596e+00,(2*1.710546596e+00)+np.pi)
 
-# print('avg fidel: ', np.mean(np.array(fidel_list)))
+print('avg fidel: ', np.mean(np.array(fidel_list)))
 
 
 
@@ -809,14 +809,14 @@ ryd_garb_all = []
 for index in range(n_shots):
     tq_ham_const_therm = cz_test._tq_ham_const_thermal()
     phase_0 = 0
-    phase_1 = 1.7193658e+00
-    phase_2 = (2*1.7193658e+00)+np.pi
+    phase_1 = 1.71054659e+00
+    phase_2 = (2*1.71054659e+00)+np.pi
     pauli_two = PauliTwo(phase_0, phase_1, phase_2)
     state_init = cz_test._state_embed(7,pauli_two.pp_state())
     all_shit_together = cz_test.Diagnosis_run(tq_ham_const_therm, 
-                            8.91542996e-01, 1.387220109e+00*cz_test.rabi_eff,
-                            -1.975647263e+00, -6.0834125323e-02*cz_test.rabi_eff,
-                            1.534627726e+00*cz_test.time_scale,
+                            8.95802432e-01, 1.3817169e+00*cz_test.rabi_eff,
+                            -1.8653697e+00, -6.43545721e-02*cz_test.rabi_eff,
+                            1.515293467e+00*cz_test.time_scale,
                             state_init)
 
     t_eval = all_shit_together[-1]*10**(9)
@@ -863,7 +863,7 @@ plt.xlabel('time (ns)')
 plt.ylabel('State occupation probability')
 plt.legend()
 plt.grid(True)
-plt.savefig('cz_mid_occ_30_micro_K_500_shots.pdf')
+plt.savefig('cz_mid_occ_bsq_30_micro_K_500_shots.pdf')
 
 plt.figure()
 plt.plot(t_eval, np.mean(ryd_state_occ_all, axis=0), 
@@ -880,7 +880,7 @@ plt.xlabel('time (ns)')
 plt.ylabel('State occupation probability')
 # plt.legend()
 plt.grid(True)
-plt.savefig('cz_ryd_occ_30_micro_K_500_shots.pdf')
+plt.savefig('cz_ryd_occ_bsq_30_micro_K_500_shots.pdf')
 
 
 
@@ -921,7 +921,7 @@ plt.xlabel('time (ns)')
 plt.ylabel('Error probability')
 plt.legend()
 plt.grid(True)
-plt.savefig('cz_error_30_micro_K_500_shots.pdf')
+plt.savefig('cz_error_bsq_30_micro_K_500_shots.pdf')
 
 
 
