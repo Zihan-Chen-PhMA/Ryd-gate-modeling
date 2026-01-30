@@ -1,5 +1,9 @@
 # ryd-gate
 
+[![CI](https://github.com/ChanceSiyuan/Ryd-gate-modeling/actions/workflows/ci.yml/badge.svg)](https://github.com/ChanceSiyuan/Ryd-gate-modeling/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Simulation and optimization of Rydberg-atom entangling gates for neutral-atom quantum computing.
 
 This package provides tools for modelling two-photon Rydberg excitation in
