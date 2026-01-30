@@ -3,12 +3,14 @@
 # %%
 import numpy as np
 import matplotlib.pyplot as plt
-from qutip import *
+from qutip import gates
+from qutip.random_objects import rand_unitary
 from scipy.linalg import block_diag
 from scipy.optimize import minimize_scalar
 from scipy import integrate
 from collections import defaultdict
-from arc import * 
+from arc import Rubidium87
+from arc.wigner import Wigner6j, CG
 
 import jax
 import jax.numpy as jnp
@@ -23,11 +25,31 @@ from jax import config
 config.update("jax_enable_x64", True)
 
 class jax_atom_Evolution():
+    """JAX-accelerated two-atom density matrix simulator for Rydberg CZ gates.
+    
+    Models 87Rb atoms with 10-level structure including ground states (|0⟩, |1⟩),
+    intermediate 6P3/2 states (|e1⟩, |e2⟩, |e3⟩), Rydberg states (|r1⟩, |r2⟩, |rP⟩),
+    and leakage states (|L0⟩, |L1⟩). Includes Rydberg blockade, spontaneous decay,
+    and AC Stark shifts from 420nm and 1013nm lasers.
+    """
 
-    def __init__(self, blockade = True, 
-                 ryd_decay = True, mid_decay = True, 
-                 distance = 3,#um
-                 psi0 = None):
+    def __init__(self, blockade=True, ryd_decay=True, mid_decay=True, 
+                 distance=3, psi0=None):
+        """Initialize the two-atom Rydberg gate simulator.
+        
+        Parameters
+        ----------
+        blockade : bool
+            Enable Rydberg blockade interaction (default True).
+        ryd_decay : bool
+            Enable Rydberg state decay via BBR and radiative channels (default True).
+        mid_decay : bool
+            Enable intermediate 6P3/2 state decay (default True).
+        distance : float
+            Interatomic distance in micrometers (default 3 μm).
+        psi0 : array, optional
+            Custom initial state; defaults to |11⟩.
+        """
         self.atom = Rubidium87()
 
         self.levels = 10
@@ -171,14 +193,38 @@ class jax_atom_Evolution():
 
         self.init_SSS_states()
     
-    def init_state0(self,psi0):
+    def init_state0(self, psi0):
+        """Set a custom initial state and compute corresponding density matrix.
+        
+        Parameters
+        ----------
+        psi0 : array
+            Initial pure state vector (100,1) for two-atom system.
+        """
         self.psi0 = psi0
         self.rho0 = self.psi0*jnp.conj(self.psi0).T
 
     def psi_to_rho(self, psi):
+        """Convert a pure state vector to a density matrix.
+        
+        Parameters
+        ----------
+        psi : array
+            Pure state vector.
+            
+        Returns
+        -------
+        array
+            Density matrix ρ = |ψ⟩⟨ψ|.
+        """
         return psi @ jnp.conj(psi).T
 
     def init_state(self):
+        """Initialize single-atom basis states for the 10-level system.
+        
+        Creates column vectors for states: |0⟩, |1⟩, |e1⟩, |e2⟩, |e3⟩,
+        |r1⟩, |r2⟩, |rP⟩, |L0⟩, |L1⟩.
+        """
         identity = jnp.eye(self.levels,dtype=jnp.complex128)
         self.state_list = []
 
@@ -203,8 +249,17 @@ class jax_atom_Evolution():
         self.state_L1 = identity[9].reshape(-1,1)
         self.state_list.append(self.state_L1)
     
-    def init_blockade(self,distance):
-
+    def init_blockade(self, distance):
+        """Initialize Rydberg-Rydberg van der Waals blockade interaction.
+        
+        Computes blockade shift V = C6/d^6 and constructs the two-atom
+        blockade Hamiltonian H_blockade = V |rr⟩⟨rr|.
+        
+        Parameters
+        ----------
+        distance : float
+            Interatomic separation in micrometers.
+        """
         self.C6 = 2 * jnp.pi * 874 * 1000 #MHz*um^6
         self.default_d = distance #um
         self.d = self.default_d
@@ -221,9 +276,22 @@ class jax_atom_Evolution():
 
         self.Hblockade = self.V*jnp.kron(self.ryd_opt, self.ryd_opt)
 
-    def init_diag_ham(self,blockade = True):
+    def init_diag_ham(self, blockade=True):
+        """Initialize diagonal (time-independent) part of the Hamiltonian.
+        
+        Sets energy levels including hyperfine splitting, intermediate state
+        detuning Δ, and non-Hermitian decay terms -iΓ/2.
+        
+        Parameters
+        ----------
+        blockade : bool
+            Include Rydberg blockade in two-qubit Hamiltonian.
+        """
         self.Hconst = jnp.zeros((self.levels,self.levels),dtype=jnp.complex128)
 
+        # 87Rb ground state hyperfine splitting: 5S1/2 F=1 ↔ F=2
+        # The exact value is 6.834682610904 GHz (defines the SI second).
+        # |0⟩ (F=1) is set 6.835 GHz below |1⟩ (F=2) which serves as energy reference.
         self.Hconst = self.Hconst.at[0,0].set(- 2 * jnp.pi * 6.835 * 1000)
         self.Hconst = self.Hconst.at[2,2].set(- self.Delta - 2 * jnp.pi * 51 - 1j*self.Gamma_mid/2) #MHz
         self.Hconst = self.Hconst.at[3,3].set(- self.Delta - 1j*self.Gamma_mid/2) #MHz
@@ -237,17 +305,53 @@ class jax_atom_Evolution():
             self.Hconst_tq = jnp.kron(jnp.eye(self.levels), self.Hconst) + jnp.kron(self.Hconst, jnp.eye(self.levels))
 
     def init_420_ham(self):
+        """Initialize 420nm laser coupling Hamiltonian.
+        
+        Constructs the coupling from ground states |0⟩,|1⟩ to intermediate
+        6P3/2 states |e1⟩,|e2⟩,|e3⟩ using Clebsch-Gordan coefficients
+        for σ- polarization.
+        """
         self.rabi_420 = jnp.sqrt(2 * jnp.abs(self.Delta) * self.rabi_eff)*self.rabi_ratio#2*jnp.pi*237#
+        
+        # Dipole matrix element ratio for σ⁻ transitions from |1⟩ (5S1/2, F=2, mF=0) to 6P3/2:
+        #
+        #                     6P3/2
+        #                    ┌─────────┐
+        #       (weaker)     │ mJ=-1/2 │  ← secondary transition (numerator)
+        #         ↗          └─────────┘
+        #   |1⟩ ─┤   σ⁻
+        #         ↘          ┌─────────┐
+        #       (stronger)   │ mJ=-3/2 │  ← primary "stretched" transition (denominator)
+        #                    └─────────┘
+        #
+        # This ratio (determined by Clebsch-Gordan coefficients) quantifies the relative
+        # strength of the secondary mJ=-1/2 coupling vs the primary mJ=-3/2 coupling.
         self.d_mid_ratio = (self.atom.getDipoleMatrixElementHFStoFS(5,0,1/2,2,0,
                                                                     6,1,3/2,-1/2,
                                                                     -1)/
                             self.atom.getDipoleMatrixElementHFStoFS(5,0,1/2,2,0,
                                                                     6,1,3/2,-3/2,
                                                                     -1))
+        # Rabi frequency for the secondary (unwanted) transition pathway
         self.rabi_420_garbage = self.rabi_420*self.d_mid_ratio
 
         self.H_420 = jnp.zeros((self.levels,self.levels),dtype=jnp.complex128)
 
+        # ═══════════════════════════════════════════════════════════════════════════
+        # 420nm transitions: |1⟩ (5S1/2, F=2, mF=0) → |e1⟩,|e2⟩,|e3⟩ (6P3/2)
+        # ═══════════════════════════════════════════════════════════════════════════
+        #
+        #   6P3/2 ──┬── |e3⟩ F=3,mF=-1  ←─┬─ CG(3/2,-3/2,3/2,1/2,3,-1) = √(1/5)
+        #           │                      │  CG(3/2,-1/2,3/2,-1/2,3,-1) = √(3/5)
+        #           ├── |e2⟩ F=2,mF=-1  ←─┼─ CG(3/2,-3/2,3/2,1/2,2,-1) = √(1/2)
+        #           │                      │  CG(3/2,-1/2,3/2,-1/2,2,-1) = 0 (!)
+        #           └── |e1⟩ F=1,mF=-1  ←─┼─ CG(3/2,-3/2,3/2,1/2,1,-1) = √(3/10)
+        #                     ↑            │  CG(3/2,-1/2,3/2,-1/2,1,-1) = √(2/5)
+        #                     │ 420nm σ⁻   │
+        #   5S1/2 ───── |1⟩ F=2,mF=0 ──────┘
+        #
+        # Coupling strength = (Ω_420 × CG_primary + Ω_420_garbage × CG_secondary) / 2
+        # ───────────────────────────────────────────────────────────────────────────
         self.H_420 = self.H_420.at[2,1].set(
             (self.rabi_420*
                 CG(3/2,-3/2,3/2,1/2,1,-1)
@@ -270,6 +374,29 @@ class jax_atom_Evolution():
             )/2
         )
 
+        # ═══════════════════════════════════════════════════════════════════════════
+        # 420nm transitions: |0⟩ (5S1/2, F=1, mF=0) → |e1⟩,|e2⟩,|e3⟩ (6P3/2)
+        # ═══════════════════════════════════════════════════════════════════════════
+        #
+        # The OPPOSITE SIGN on rabi_420 comes from hyperfine state decomposition:
+        #
+        #   Hyperfine states decomposed into uncoupled basis |mJ, mI⟩:
+        #   ┌─────────────────────────────────────────────────────────────────────┐
+        #   │ |F=2,mF=0⟩ = +|mJ=+½,mI=-½⟩ + |mJ=-½,mI=+½⟩  (same sign)        │
+        #   │ |F=1,mF=0⟩ = +|mJ=+½,mI=-½⟩ - |mJ=-½,mI=+½⟩  (opposite sign!) │
+        #   └─────────────────────────────────────────────────────────────────────┘
+        #
+        #   The F=1 and F=2 states must be orthogonal, so the CG coefficients
+        #   for the |mJ=-½,mI=+½⟩ component have OPPOSITE relative signs.
+        #
+        #   When σ⁻ light couples primarily to mJ=-½ → mJ'=-3/2 transition,
+        #   this sign difference propagates to the effective Rabi frequency:
+        #
+        #   H[e,1] = (+Ω_420×CG_p + Ω_garb×CG_s)/2   ← from |F=2,mF=0⟩
+        #   H[e,0] = (-Ω_420×CG_p + Ω_garb×CG_s)/2   ← from |F=1,mF=0⟩ (sign flip!)
+        #
+        # This is purely from angular momentum algebra, NOT from standing-wave geometry.
+        # ───────────────────────────────────────────────────────────────────────────
         self.H_420 = self.H_420.at[2,0].set(
             (-self.rabi_420*
                 CG(3/2,-3/2,3/2,1/2,1,-1) + 
@@ -296,6 +423,12 @@ class jax_atom_Evolution():
         self.H_420_tq_conj = jnp.conj(self.H_420_tq).T
     
     def init_1013_ham(self):
+        """Initialize 1013nm laser coupling Hamiltonian.
+        
+        Constructs the coupling from intermediate 6P3/2 states to Rydberg
+        70S1/2 states |r1⟩,|r2⟩ using Clebsch-Gordan coefficients
+        for σ+ polarization.
+        """
         self.rabi_1013 = jnp.sqrt(2 * jnp.abs(self.Delta) * self.rabi_eff)/self.rabi_ratio#2*jnp.pi*303#
         self.d_ryd_ratio = (self.atom.getDipoleMatrixElement(6,1,3/2,-1/2,
                                                              *self.level_dict['r2']['Qnum'],
@@ -307,6 +440,20 @@ class jax_atom_Evolution():
 
         self.H_1013 = jnp.zeros((self.levels,self.levels),dtype=jnp.complex128)
    
+        # ═══════════════════════════════════════════════════════════════════════════
+        # 1013nm PRIMARY transitions: |e1⟩,|e2⟩,|e3⟩ (6P3/2) → |r1⟩ (70S1/2, mJ=-1/2)
+        # ═══════════════════════════════════════════════════════════════════════════
+        #
+        #   70S1/2 ───── |r1⟩ mJ=-1/2 ←────┬── from |e1⟩: CG(3/2,-3/2,3/2,1/2,1,-1)
+        #                     ↑             ├── from |e2⟩: CG(3/2,-3/2,3/2,1/2,2,-1)
+        #                     │ 1013nm σ⁺   └── from |e3⟩: CG(3/2,-3/2,3/2,1/2,3,-1)
+        #                     │
+        #   6P3/2 ──┬── |e3⟩ F=3,mF=-1     CG values: √(1/5), √(1/2), √(3/10)
+        #           ├── |e2⟩ F=2,mF=-1     (same CG as 420nm, different physical meaning:
+        #           └── |e1⟩ F=1,mF=-1      here coupling 6P3/2→70S1/2 via mJ projection)
+        #
+        # Coupling strength = Ω_1013 × CG / 2
+        # ───────────────────────────────────────────────────────────────────────────
         self.H_1013 = self.H_1013.at[5,2].set(
             (self.rabi_1013/2)*CG(3/2,-3/2,3/2,1/2,1,-1)
         )
@@ -317,6 +464,21 @@ class jax_atom_Evolution():
             (self.rabi_1013/2)*CG(3/2,-3/2,3/2,1/2,3,-1)
         )
     
+        # ═══════════════════════════════════════════════════════════════════════════
+        # 1013nm SECONDARY transitions: |e1⟩,|e2⟩,|e3⟩ (6P3/2) → |r2⟩ (70S1/2, mJ=+1/2)
+        # ═══════════════════════════════════════════════════════════════════════════
+        #
+        #   70S1/2 ───── |r2⟩ mJ=+1/2 ←────┬── from |e1⟩: CG(3/2,-1/2,3/2,-1/2,1,-1)=√(2/5)
+        #                     ↑             ├── from |e2⟩: CG(3/2,-1/2,3/2,-1/2,2,-1)= 0 (!)
+        #                     │ 1013nm σ⁺   └── from |e3⟩: CG(3/2,-1/2,3/2,-1/2,3,-1)=√(3/5)
+        #                     │
+        #   6P3/2 ──┬── |e3⟩ F=3,mF=-1     Note: |e2⟩→|r2⟩ coupling is ZERO!
+        #           ├── |e2⟩ F=2,mF=-1     This is an exact symmetry selection rule.
+        #           └── |e1⟩ F=1,mF=-1
+        #
+        # This is the "garbage" Rydberg state that leads to gate errors.
+        # Coupling strength = Ω_1013_garbage × CG / 2
+        # ───────────────────────────────────────────────────────────────────────────
         self.H_1013 = self.H_1013.at[6,2].set(
             (self.rabi_1013_garbage/2)*CG(3/2,-1/2,3/2,-1/2,1,-1)
         )
@@ -333,20 +495,37 @@ class jax_atom_Evolution():
         self.H_1013_tq_hermi = self.H_1013_tq + self.H_1013_tq_conj
     
     def hamiltonian(self, t, args):
-
+        """Compute the full time-dependent Hamiltonian at time t.
+        
+        Parameters
+        ----------
+        t : float
+            Time in microseconds.
+        args : dict
+            Dictionary with keys "amp_420", "phase_420", "amp_1013" mapping
+            to callable pulse functions.
+            
+        Returns
+        -------
+        array
+            100x100 complex Hamiltonian matrix for two-atom system.
+        """
         amp_420 = args["amp_420"](t)
         phase_420 = args["phase_420"](t)
-
         amp_1013 = args["amp_1013"](t)
 
         Hamitonian = (self.Hconst_tq + 
-                      self._420_amp * (jnp.exp(-1j*phase_420) * self.H_420_tq + jnp.exp(1j*phase_420) * self.H_420_tq_conj) +
-                      self._1013_amp * self.H_1013_tq_hermi )#- self.cdagc_tq * 1j * 0.5)
+                      amp_420 * (jnp.exp(-1j*phase_420) * self.H_420_tq + jnp.exp(1j*phase_420) * self.H_420_tq_conj) +
+                      amp_1013 * self.H_1013_tq_hermi )#- self.cdagc_tq * 1j * 0.5)
         
         return Hamitonian
 
     def init_hamiltonian_sparse(self):
-
+        """Initialize sparse representation of Hamiltonian for efficient evolution.
+        
+        Extracts diagonal and off-diagonal elements separately for optimized
+        matrix-vector products during ODE integration.
+        """
         self.H_diag_tq_sparse = jnp.diag(self.Hconst_tq)
         self.H_diag_tq_sparse_conj = jnp.conj(self.H_diag_tq_sparse)
 
@@ -363,21 +542,49 @@ class jax_atom_Evolution():
         self.H_offdiag_tq_sparse_idx = jnp.concatenate([self.H_420_tq_sparse_idx, self.H_1013_tq_sparse_idx], axis=0)
 
     def hamiltonian_sparse(self, t, args):
-
+        """Compute sparse off-diagonal Hamiltonian elements at time t.
+        
+        Parameters
+        ----------
+        t : float
+            Time in microseconds.
+        args : dict
+            Pulse function dictionary.
+            
+        Returns
+        -------
+        array
+            Sparse representation of off-diagonal coupling terms.
+        """
         amp_420 = args["amp_420"](t)
         phase_420 = args["phase_420"](t)
-
         amp_1013 = args["amp_1013"](t)
 
         Hamitonian_sparse = jnp.concatenate([
-            self._420_amp * jnp.exp(-1j*phase_420) * self.H_420_tq_sparse_value,
-            self._1013_amp * self.H_1013_tq_sparse_value
+            amp_420 * jnp.exp(-1j*phase_420) * self.H_420_tq_sparse_value,
+            amp_1013 * self.H_1013_tq_sparse_value
         ])
 
         return Hamitonian_sparse
 
     
-    def integrate_rho_jax(self, tlist, amp_420, phase_420, amp_1013, rho0 = None):
+    def integrate_rho_jax(self, tlist, amp_420, phase_420, amp_1013, rho0=None):
+        """Integrate Lindblad master equation using JAX-accelerated ODE solver.
+        
+        Parameters
+        ----------
+        tlist : array
+            Time points for evolution (μs).
+        amp_420, phase_420, amp_1013 : callable
+            Pulse amplitude/phase functions of time.
+        rho0 : array, optional
+            Initial density matrix; defaults to self.rho0.
+            
+        Returns
+        -------
+        array
+            Density matrices at each time point, shape (len(tlist), 100, 100).
+        """
         if rho0 is None:
             rho0_flat = self.rho0.reshape((-1,))
         else:
@@ -432,8 +639,23 @@ class jax_atom_Evolution():
         sol = sol_flat.reshape((len(tlist), self.levels**2, self.levels**2))
         return sol
     
-    def integrate_rho_multi_jax(self, tlist, amp_420, phase_420, amp_1013, rho0_list = None):
-
+    def integrate_rho_multi_jax(self, tlist, amp_420, phase_420, amp_1013, rho0_list=None):
+        """Integrate multiple initial states in parallel using JAX vmap.
+        
+        Parameters
+        ----------
+        tlist : array
+            Time points for evolution (μs).
+        amp_420, phase_420, amp_1013 : callable
+            Pulse amplitude/phase functions.
+        rho0_list : list of arrays, optional
+            List of initial density matrices for batch evolution.
+            
+        Returns
+        -------
+        array
+            Batch of density matrices, shape (batch, len(tlist), 100, 100).
+        """
         if rho0_list is None:
             rho0_batch = jnp.stack([self.rho0.reshape((-1,))])
             batch = 1
@@ -494,8 +716,23 @@ class jax_atom_Evolution():
         sol = sol_flat.reshape((batch, len(tlist), self.levels**2, self.levels**2))
         return sol
     
-    def integrate_rho_multi2_jax(self, tlist, amp_420, phase_420, amp_1013, rho0_list = None):
-
+    def integrate_rho_multi2_jax(self, tlist, amp_420, phase_420, amp_1013, rho0_list=None):
+        """Integrate multiple initial states as concatenated batch (alternative method).
+        
+        Parameters
+        ----------
+        tlist : array
+            Time points for evolution (μs).
+        amp_420, phase_420, amp_1013 : callable
+            Pulse amplitude/phase functions.
+        rho0_list : list of arrays, optional
+            List of initial density matrices.
+            
+        Returns
+        -------
+        array
+            Density matrices, shape (len(tlist), batch, 100, 100).
+        """
         if rho0_list is None:
             rho0_batch = jnp.concatenate([self.rho0.reshape((-1,))])
             batch = 1
@@ -585,7 +822,22 @@ class jax_atom_Evolution():
     #     sol = sol_flat.reshape((len(tlist), self.levels**2))
     #     return sol
 
-    def mid_state_decay(self, rho0 = None):
+    def mid_state_decay(self, rho0=None):
+        """Apply instantaneous decay of intermediate 6P3/2 states to ground states.
+        
+        Useful for modeling fast intermediate state decay between gate operations.
+        Redistributes population according to branching ratios.
+        
+        Parameters
+        ----------
+        rho0 : array, optional
+            Input density matrix; defaults to self.rho0.
+            
+        Returns
+        -------
+        array
+            Density matrix with intermediate state population decayed.
+        """
         if rho0 is None:
             rho0 = self.rho0
         else:
@@ -621,6 +873,11 @@ class jax_atom_Evolution():
         return rho0
     
     def init_420_light_shift(self):
+        """Calculate AC Stark shifts from the 420nm laser on ground states.
+        
+        Computes differential light shift between |0⟩ and |1⟩ states due to
+        off-resonant coupling to 6P3/2 intermediate states.
+        """
         # _420_lightshift_1 = 4/3 * self.rabi_420**2 / (4*self.Delta)
         _420_lightshift_1 = ((self.rabi_420*
                                 CG(3/2,-3/2,3/2,1/2,1,-1) + 
@@ -659,7 +916,11 @@ class jax_atom_Evolution():
         self._420_diff_shift = _420_lightshift_1 - _420_lightshift_0
     
     def init_1013_light_shift(self):
-
+        """Calculate AC Stark shifts from the 1013nm laser on ground and Rydberg states.
+        
+        Computes light shifts on Rydberg state (via 6P3/2) and differential
+        shift on ground states via off-resonant D1/D2 transitions.
+        """
         # _1013_lightshift_r = self.rabi_1013**2 / (4*self.Delta)
         _1013_lightshift_r = self.rabi_1013**2 * (
             CG(3/2,-3/2,3/2,1/2,1,-1)**2 / (4*(self.Delta + 2 * jnp.pi * 51 + self._420_lightshift_1)) +
@@ -716,6 +977,11 @@ class jax_atom_Evolution():
         self._1013_lightshift_0 = _1013_lightshift_0
 
     def rydberg_RD_branch_ratio(self):
+        """Calculate branching ratios for Rydberg radiative decay to ground states.
+        
+        Computes decay fractions to |0⟩, |1⟩, |L0⟩, |L1⟩ via intermediate
+        5P states using Clebsch-Gordan coefficients for the 70S → 5P → 5S cascade.
+        """
         I, mI = 3/2, 1/2
         nr, lr, jr, mjr = self.level_dict['r1']['Qnum']
         fr = [2,1]
@@ -763,7 +1029,19 @@ class jax_atom_Evolution():
         self.branch_ratio_L0 = branch_ratio[5] + branch_ratio[7]
         self.branch_ratio_L1 = branch_ratio[0] + branch_ratio[1] + branch_ratio[3] + branch_ratio[4]
 
-    def mid_branch_ratio(self,level_label):
+    def mid_branch_ratio(self, level_label):
+        """Calculate branching ratios for 6P3/2 intermediate state decay.
+        
+        Parameters
+        ----------
+        level_label : str
+            Intermediate state label ('e1', 'e2', or 'e3').
+            
+        Returns
+        -------
+        tuple
+            Branching ratios (ratio_0, ratio_1, ratio_L0, ratio_L1) to ground states.
+        """
         ne,le,je,fe,mfe = self.level_dict[level_label]['Qnum']
 
         ng,lg,jg = 5,0,1/2
@@ -787,7 +1065,11 @@ class jax_atom_Evolution():
         return branch_ratio_0, branch_ratio_1, branch_ratio_L0, branch_ratio_L1
 
     def init_SSS_states(self):
-
+        """Initialize Symmetric State Set (SSS) for gate fidelity characterization.
+        
+        Creates 12 specific two-qubit input states that span the computational
+        subspace, enabling efficient average gate fidelity calculation.
+        """
         state_00 = jnp.kron(self.state_0, self.state_0)
         state_01 = jnp.kron(self.state_0, self.state_1)
         state_10 = jnp.kron(self.state_1, self.state_0)
@@ -808,8 +1090,19 @@ class jax_atom_Evolution():
             state_00/jnp.sqrt(2) - 1j*state_11/jnp.sqrt(2),
         ]
     
-    def SSS_rec(self,idx):
-
+    def SSS_rec(self, idx):
+        """Construct recovery unitary for SSS state fidelity measurement.
+        
+        Parameters
+        ----------
+        idx : int
+            SSS state index (0-11).
+            
+        Returns
+        -------
+        array
+            Recovery unitary that maps ideal CZ output back to |00⟩.
+        """
         p1 = [0,0,1,1,2,0,2,0,1,0,3,1]
         p2 = [3,1,0,2,0,0,1,1,1,0,0,0]
         p3 = [0,0,0,0,0,0,1,1,1,1,1,1]
@@ -823,15 +1116,45 @@ class jax_atom_Evolution():
         return jnp.kron(G2,G2) @ self.CZ_ideal() @ jnp.kron(G1,G1)
 
     def rand_U(self):
+        """Generate a random single-qubit unitary extended to the full Hilbert space.
+        
+        Returns
+        -------
+        array
+            Random two-qubit unitary acting on computational subspace.
+        """
         U = jnp.array(block_diag(rand_unitary(2).full(),np.eye(8)),dtype=jnp.complex128)
         return jnp.kron(U,U)
 
     def CZ_ideal(self):
+        """Return the ideal CZ gate matrix for the two-atom system.
+        
+        Returns
+        -------
+        array
+            100x100 identity with -1 at |11⟩ position (index 11,11).
+        """
         CZ = jnp.eye(self.levels**2,dtype=jnp.complex128)
         CZ = CZ.at[11,11].set(-1)
         return CZ
     
-    def CZ_fidelity(self, state_final, state_initial = None, theta = None):
+    def CZ_fidelity(self, state_final, state_initial=None, theta=None):
+        """Calculate CZ gate fidelity with optional single-qubit Z-rotation correction.
+        
+        Parameters
+        ----------
+        state_final : array
+            Final density matrix after gate operation.
+        state_initial : array, optional
+            Initial state; defaults to self.psi0.
+        theta : float, optional
+            Fixed Z-rotation angle; if None, optimizes over theta.
+            
+        Returns
+        -------
+        tuple
+            (fidelity, optimal_theta) where fidelity is ⟨ψ_ideal|ρ_final|ψ_ideal⟩.
+        """
         if state_initial is None:
             state_initial = self.psi0
         CZ_psi0 = self.CZ_ideal() @ state_initial
@@ -859,8 +1182,120 @@ class jax_atom_Evolution():
             fid = jnp.abs(jnp.conj(theta_CZ_psi0).T @ state_final @ theta_CZ_psi0)
 
             return fid[0,0], theta
+
+    def CZ_fidelity_with_leakage(self, state_final, state_initial=None, theta=None):
+        """Calculate CZ gate fidelity treating |L0⟩ as indistinguishable from |0⟩.
+        
+        In experiments, the detection system cannot distinguish between the
+        ground state |0⟩ and the leakage state |L0⟩ (F=1, mF≠0). This method
+        computes fidelity by first mapping |L0⟩ → |0⟩ in the density matrix,
+        which gives a metric comparable to experimental measurements.
+        
+        Parameters
+        ----------
+        state_final : array
+            Final density matrix after gate operation (100x100).
+        state_initial : array, optional
+            Initial pure state; defaults to self.psi0.
+        theta : float, optional
+            Fixed Z-rotation angle; if None, optimizes over theta.
+            
+        Returns
+        -------
+        tuple
+            (fidelity_with_leakage, optimal_theta, leakage_contribution) where:
+            - fidelity_with_leakage: Fidelity with |L0⟩ treated as |0⟩
+            - optimal_theta: Z-rotation angle used
+            - leakage_contribution: Additional fidelity from L0 misidentification
+        """
+        if state_initial is None:
+            state_initial = self.psi0
+        
+        # For density matrix transformation, we need to:
+        # 1. Add L0 diagonal population to 0 diagonal
+        # 2. Add L0 coherences to 0 coherences
+        
+        # Two-qubit indices:
+        # |0,0⟩ = 0, |0,L0⟩ = 8, |L0,0⟩ = 80, |L0,L0⟩ = 88
+        # |0,1⟩ = 1, |L0,1⟩ = 81
+        # |1,0⟩ = 10, |1,L0⟩ = 18
+        # |1,1⟩ = 11, |L0,L0⟩ already covered
+        
+        # Create effective density matrix with L0 → 0 mapping
+        rho = state_final.copy()
+        rho_eff = jnp.zeros_like(rho)
+        
+        # Map indices: for each state |i,j⟩, if i=L0(8) map to i=0, if j=L0(8) map to j=0
+        L0_idx = 8  # |L0⟩ single-atom index
+        zero_idx = 0  # |0⟩ single-atom index
+        
+        for i in range(self.levels):
+            for j in range(self.levels):
+                # Original two-qubit index
+                orig_i = i
+                orig_j = j
+                
+                # Map L0 → 0 for both atoms
+                eff_i = zero_idx if i == L0_idx else i
+                eff_j = zero_idx if j == L0_idx else j
+                
+                # Two-qubit indices
+                orig_idx_row = orig_i * self.levels + orig_j
+                orig_idx_col_start = orig_i * self.levels
+                eff_idx_row = eff_i * self.levels + eff_j
+                
+                for k in range(self.levels):
+                    for l in range(self.levels):
+                        orig_k = k
+                        orig_l = l
+                        eff_k = zero_idx if k == L0_idx else k
+                        eff_l = zero_idx if l == L0_idx else l
+                        
+                        orig_idx = (orig_i * self.levels + orig_j, orig_k * self.levels + orig_l)
+                        eff_idx = (eff_i * self.levels + eff_j, eff_k * self.levels + eff_l)
+                        
+                        rho_eff = rho_eff.at[eff_idx].add(rho[orig_idx])
+        
+        # Now calculate fidelity with the effective density matrix
+        CZ_psi0 = self.CZ_ideal() @ state_initial
+        
+        # Calculate standard fidelity for comparison
+        fid_standard, theta_std = self.CZ_fidelity(state_final, state_initial, theta)
+        
+        if theta is None:
+            theta = theta_std
+        
+        # Calculate fidelity with effective (L0→0 mapped) density matrix
+        U_theta = jnp.array(block_diag(gates.rz(theta).full(), np.eye(8)), dtype=jnp.complex128)
+        U_theta_tq = jnp.kron(U_theta, U_theta)
+        
+        theta_CZ_psi0 = U_theta_tq @ CZ_psi0
+        fid_with_leakage = jnp.abs(jnp.conj(theta_CZ_psi0).T @ rho_eff @ theta_CZ_psi0)[0, 0]
+        
+        # Leakage contribution is the difference
+        leakage_contribution = float(fid_with_leakage - fid_standard)
+        
+        return float(fid_with_leakage), float(theta), leakage_contribution
     
-    def CZ_back_to_00(self, state_final, state_idx, state_initial = None, theta = None):
+    def CZ_back_to_00(self, state_final, state_idx, state_initial=None, theta=None):
+        """Apply recovery operations to map final state back to |00⟩ basis.
+        
+        Parameters
+        ----------
+        state_final : array
+            Final density matrix.
+        state_idx : int
+            SSS state index for selecting recovery unitary.
+        state_initial : array, optional
+            Initial state.
+        theta : float, optional
+            Z-rotation angle; if None, determined from fidelity optimization.
+            
+        Returns
+        -------
+        array
+            Recovered density matrix in |00⟩ reference frame.
+        """
         if state_initial is None:
             state_initial = self.psi0
         CZ_psi0 = self.CZ_ideal() @ state_initial
@@ -889,7 +1324,25 @@ class jax_atom_Evolution():
 
         return state_final_00
     
-    def get_polarizability_fs(self,K,nLJ_target,nLJ_coupled,laser_freq):
+    def get_polarizability_fs(self, K, nLJ_target, nLJ_coupled, laser_freq):
+        """Calculate rank-K polarizability tensor component in fine structure basis.
+        
+        Parameters
+        ----------
+        K : int
+            Tensor rank (0=scalar, 1=vector, 2=tensor).
+        nLJ_target : tuple
+            Target state quantum numbers (n, L, J).
+        nLJ_coupled : list of tuples
+            Coupled states contributing to polarizability.
+        laser_freq : float
+            Laser frequency in MHz.
+            
+        Returns
+        -------
+        float
+            Polarizability component α_K.
+        """
         n,L,J = nLJ_target
 
         alpha_K = 0
@@ -908,7 +1361,29 @@ class jax_atom_Evolution():
         elif K == 2:
             return -jnp.sqrt((2*J*(2*J-1)/(3*(J+1)*(2*J+1)*(2*J+3))))*alpha_K
         
-    def get_polarizability_hfs_from_fs(self,K,F,I,nLJ_target,nLJ_coupled,laser_freq):
+    def get_polarizability_hfs_from_fs(self, K, F, I, nLJ_target, nLJ_coupled, laser_freq):
+        """Calculate HFS polarizability from fine structure matrix elements.
+        
+        Parameters
+        ----------
+        K : int
+            Tensor rank (0, 1, or 2).
+        F : float
+            Total angular momentum quantum number.
+        I : float
+            Nuclear spin (3/2 for 87Rb).
+        nLJ_target : tuple
+            Target state (n, L, J).
+        nLJ_coupled : list
+            Coupled states.
+        laser_freq : float
+            Laser frequency in MHz.
+            
+        Returns
+        -------
+        float
+            HFS polarizability component.
+        """
         n,L,J = nLJ_target
 
         alpha_K = 0
@@ -927,7 +1402,27 @@ class jax_atom_Evolution():
         elif K == 2:
             return -(-1)**(J+I+F)*jnp.sqrt((2*F*(2*F-1)*(2*F+1)/(3*(F+1)*(2*F+3))))*Wigner6j(F,2,F,J,I,J)*alpha_K
         
-    def get_polarizability_hfs(self,K,I,nLJF_target,nLJF_coupled,laser_freq):
+    def get_polarizability_hfs(self, K, I, nLJF_target, nLJF_coupled, laser_freq):
+        """Calculate polarizability directly in hyperfine structure basis.
+        
+        Parameters
+        ----------
+        K : int
+            Tensor rank (0, 1, or 2).
+        I : float
+            Nuclear spin.
+        nLJF_target : tuple
+            Target state (n, L, J, F).
+        nLJF_coupled : list
+            Coupled HFS states.
+        laser_freq : float
+            Laser frequency in MHz.
+            
+        Returns
+        -------
+        float
+            HFS polarizability α_K.
+        """
         n,L,J,F = nLJF_target
         A, B = self.atom.getHFSCoefficients(n,L,J)
         G = F*(F+1) - I*(I+1) - J*(J+1)
@@ -966,3 +1461,243 @@ class jax_atom_Evolution():
             return -jnp.sqrt(2*F/((F+1)*(2*F+1)))*alpha_K
         elif K == 2:
             return -jnp.sqrt((2*F*(2*F-1)/(3*(F+1)*(2*F+1)*(2*F+3))))*alpha_K
+
+    # ------------------------------------------------------------------
+    # --- INFIDELITY DIAGNOSTICS METHODS ---
+    # ------------------------------------------------------------------
+
+    def occ_operator(self, level_label):
+        """Create two-atom occupation operator for a given level.
+        
+        Constructs the operator |i⟩⟨i| ⊗ I + I ⊗ |i⟩⟨i| which measures the
+        total population in level i across both atoms.
+        
+        Parameters
+        ----------
+        level_label : str
+            Level label from level_label list ('0', '1', 'e1', 'e2', 'e3',
+            'r1', 'r2', 'rP', 'L0', 'L1').
+            
+        Returns
+        -------
+        array
+            100x100 occupation operator for two-atom system.
+        """
+        idx = self.level_dict[level_label]['idx']
+        ket = self.state_list[idx]
+        proj = ket @ jnp.conj(ket).T
+        return jnp.kron(jnp.eye(self.levels), proj) + jnp.kron(proj, jnp.eye(self.levels))
+
+    def diagnose_population(self, sol):
+        """Extract population evolution from density matrix trajectory.
+        
+        Computes time-resolved populations for different state categories
+        to diagnose sources of gate infidelity.
+        
+        Parameters
+        ----------
+        sol : array
+            Density matrix trajectory, shape (n_times, 100, 100).
+            
+        Returns
+        -------
+        dict
+            Dictionary with population arrays for each category:
+            - 'computational': Population in |00⟩, |01⟩, |10⟩, |11⟩
+            - 'intermediate': Population in |e1⟩, |e2⟩, |e3⟩ states
+            - 'rydberg': Population in target Rydberg |r1⟩
+            - 'rydberg_unwanted': Population in |r2⟩ and |rP⟩
+            - 'leakage': Population in |L0⟩ and |L1⟩
+            - 'total_trace': Trace of density matrix (should be ~1)
+        """
+        n_times = sol.shape[0]
+        
+        # Build occupation operators
+        occ_ops = {label: self.occ_operator(label) for label in self.level_label}
+        
+        # Computational basis indices (two-qubit)
+        comp_indices = [0, 1, 10, 11]  # |00⟩, |01⟩, |10⟩, |11⟩
+        
+        populations = {
+            'computational': jnp.zeros(n_times),
+            'intermediate': jnp.zeros(n_times),
+            'rydberg': jnp.zeros(n_times),
+            'rydberg_unwanted': jnp.zeros(n_times),
+            'leakage': jnp.zeros(n_times),
+            'total_trace': jnp.zeros(n_times),
+        }
+        
+        for t in range(n_times):
+            rho = sol[t]
+            
+            # Computational basis population (diagonal elements)
+            populations['computational'] = populations['computational'].at[t].set(
+                sum(jnp.real(rho[i, i]) for i in comp_indices)
+            )
+            
+            # Intermediate states (e1, e2, e3)
+            for label in ['e1', 'e2', 'e3']:
+                populations['intermediate'] = populations['intermediate'].at[t].add(
+                    jnp.real(jnp.trace(occ_ops[label] @ rho)) / 2
+                )
+            
+            # Target Rydberg state (r1)
+            populations['rydberg'] = populations['rydberg'].at[t].set(
+                jnp.real(jnp.trace(occ_ops['r1'] @ rho)) / 2
+            )
+            
+            # Unwanted Rydberg states (r2, rP)
+            for label in ['r2', 'rP']:
+                populations['rydberg_unwanted'] = populations['rydberg_unwanted'].at[t].add(
+                    jnp.real(jnp.trace(occ_ops[label] @ rho)) / 2
+                )
+            
+            # Leakage states (L0, L1)
+            for label in ['L0', 'L1']:
+                populations['leakage'] = populations['leakage'].at[t].add(
+                    jnp.real(jnp.trace(occ_ops[label] @ rho)) / 2
+                )
+            
+            # Total trace
+            populations['total_trace'] = populations['total_trace'].at[t].set(
+                jnp.real(jnp.trace(rho))
+            )
+        
+        return populations
+
+    def diagnose_infidelity(self, rho_final, psi0, theta=None):
+        """Decompose gate infidelity into contributing error sources.
+        
+        Analyzes the final density matrix to identify the physical origins
+        of gate error: leakage, residual excitation, decay, and coherent errors.
+        
+        Parameters
+        ----------
+        rho_final : array
+            Final density matrix after gate operation (100x100).
+        psi0 : array
+            Initial pure state (100x1).
+        theta : float, optional
+            Z-rotation correction angle. If None, optimal theta is computed.
+            
+        Returns
+        -------
+        dict
+            Dictionary with infidelity breakdown:
+            - 'total_infidelity': 1 - F (total gate error)
+            - 'leakage_error': Population in leakage states |L0⟩, |L1⟩
+            - 'rydberg_residual': Residual Rydberg population after gate
+            - 'intermediate_residual': Residual intermediate state population
+            - 'decay_error': Trace loss due to spontaneous decay
+            - 'coherent_error': Remaining coherent error (dephasing, etc.)
+            - 'fidelity': Gate fidelity F
+            - 'theta': Optimal Z-rotation angle used
+        """
+        # Get fidelity with optimal theta
+        fid, opt_theta = self.CZ_fidelity(rho_final, psi0, theta)
+        if theta is None:
+            theta = opt_theta
+        
+        # Build occupation operators
+        occ_ops = {label: self.occ_operator(label) for label in self.level_label}
+        
+        # Calculate population in each error channel
+        leakage = 0.0
+        for label in ['L0', 'L1']:
+            leakage += jnp.real(jnp.trace(occ_ops[label] @ rho_final)) / 2
+        
+        rydberg_residual = 0.0
+        for label in ['r1', 'r2', 'rP']:
+            rydberg_residual += jnp.real(jnp.trace(occ_ops[label] @ rho_final)) / 2
+        
+        intermediate_residual = 0.0
+        for label in ['e1', 'e2', 'e3']:
+            intermediate_residual += jnp.real(jnp.trace(occ_ops[label] @ rho_final)) / 2
+        
+        # Trace loss indicates decay
+        trace = jnp.real(jnp.trace(rho_final))
+        decay_error = 1.0 - trace
+        
+        # Total infidelity
+        total_infidelity = 1.0 - fid
+        
+        # Coherent error is what remains after accounting for other sources
+        # (Note: this is approximate as errors are not strictly additive)
+        coherent_error = max(0.0, total_infidelity - leakage - rydberg_residual 
+                           - intermediate_residual - decay_error)
+        
+        return {
+            'total_infidelity': float(total_infidelity),
+            'leakage_error': float(leakage),
+            'rydberg_residual': float(rydberg_residual),
+            'intermediate_residual': float(intermediate_residual),
+            'decay_error': float(decay_error),
+            'coherent_error': float(coherent_error),
+            'fidelity': float(fid),
+            'theta': float(theta),
+        }
+
+    def diagnose_plot(self, tlist, sol, initial_label='11', save_path=None):
+        """Plot population evolution during gate for infidelity diagnosis.
+        
+        Creates a visualization of how population flows between different
+        atomic states during the gate operation.
+        
+        Parameters
+        ----------
+        tlist : array
+            Time points in microseconds.
+        sol : array
+            Density matrix trajectory, shape (len(tlist), 100, 100).
+        initial_label : str
+            Label for the initial state (e.g., '11', '01', '00').
+        save_path : str, optional
+            Path to save the figure. If None, displays interactively.
+            
+        Returns
+        -------
+        dict
+            Population data dictionary from diagnose_population.
+        """
+        populations = self.diagnose_population(sol)
+        
+        # Convert time to nanoseconds for display
+        time_ns = np.array(tlist) * 1000
+        
+        plt.style.use('seaborn-v0_8-whitegrid')
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+        
+        # Top panel: Main populations
+        ax1.plot(time_ns, populations['computational'], 
+                 label='Computational basis', lw=2, color='#2E86AB')
+        ax1.plot(time_ns, populations['rydberg'], 
+                 label='Rydberg |r1⟩', lw=2, linestyle='--', color='#A23B72')
+        ax1.plot(time_ns, populations['intermediate'], 
+                 label='Intermediate (6P₃/₂)', lw=2, linestyle=':', color='#F18F01')
+        ax1.set_ylabel('Population', fontsize=12)
+        ax1.set_title(f'Population Evolution from |{initial_label}⟩ Initial State', 
+                      fontsize=14)
+        ax1.legend(loc='right', fontsize=10)
+        ax1.set_ylim(-0.05, 1.05)
+        
+        # Bottom panel: Error channels
+        ax2.plot(time_ns, populations['rydberg_unwanted'], 
+                 label="Unwanted Rydberg |r2⟩, |rP⟩", lw=2, color='#C73E1D')
+        ax2.plot(time_ns, populations['leakage'], 
+                 label='Leakage |L0⟩, |L1⟩', lw=2, linestyle='--', color='#3B1F2B')
+        ax2.plot(time_ns, 1 - populations['total_trace'], 
+                 label='Trace loss (decay)', lw=2, linestyle=':', color='#6B818C')
+        ax2.set_xlabel('Time (ns)', fontsize=12)
+        ax2.set_ylabel('Population', fontsize=12)
+        ax2.set_title('Error Channels', fontsize=14)
+        ax2.legend(loc='right', fontsize=10)
+        
+        plt.tight_layout()
+        
+        if save_path is not None:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Figure saved to {save_path}")
+        else:
+            plt.show()
+        
+        return populations
