@@ -1211,13 +1211,6 @@ class jax_atom_Evolution():
         if state_initial is None:
             state_initial = self.psi0
         
-        # Build the L0→0 mapping transformation
-        # Single-atom mapping: |L0⟩ (idx 8) → |0⟩ (idx 0)
-        # This is a partial isometry that maps L0 population to 0
-        V_sq = jnp.eye(self.levels, dtype=jnp.complex128)
-        # Add mapping: when we measure, |L0⟩ appears as |0⟩
-        # We create a projector that combines |0⟩ and |L0⟩ into effective |0⟩
-        
         # For density matrix transformation, we need to:
         # 1. Add L0 diagonal population to 0 diagonal
         # 2. Add L0 coherences to 0 coherences
@@ -1265,19 +1258,6 @@ class jax_atom_Evolution():
         
         # Now calculate fidelity with the effective density matrix
         CZ_psi0 = self.CZ_ideal() @ state_initial
-        
-        # Also map the initial state if it has L0 component (usually it doesn't)
-        psi_eff = state_initial.copy()
-        for i in range(self.levels):
-            for j in range(self.levels):
-                if i == L0_idx or j == L0_idx:
-                    eff_i = zero_idx if i == L0_idx else i
-                    eff_j = zero_idx if j == L0_idx else j
-                    orig_idx = i * self.levels + j
-                    eff_idx = eff_i * self.levels + eff_j
-                    psi_eff = psi_eff.at[eff_idx].add(state_initial[orig_idx])
-                    if i == L0_idx or j == L0_idx:
-                        psi_eff = psi_eff.at[orig_idx].set(0)
         
         # Calculate standard fidelity for comparison
         fid_standard, theta_std = self.CZ_fidelity(state_final, state_initial, theta)
