@@ -1182,6 +1182,120 @@ class jax_atom_Evolution():
             fid = jnp.abs(jnp.conj(theta_CZ_psi0).T @ state_final @ theta_CZ_psi0)
 
             return fid[0,0], theta
+
+    def CZ_fidelity_with_leakage(self, state_final, state_initial=None, theta=None):
+        """Calculate CZ gate fidelity treating |L0⟩ as indistinguishable from |0⟩.
+        
+        In experiments, the detection system cannot distinguish between the
+        ground state |0⟩ and the leakage state |L0⟩ (F=1, mF≠0). This method
+        computes fidelity by first mapping |L0⟩ → |0⟩ in the density matrix,
+        which gives a metric comparable to experimental measurements.
+        
+        Parameters
+        ----------
+        state_final : array
+            Final density matrix after gate operation (100x100).
+        state_initial : array, optional
+            Initial pure state; defaults to self.psi0.
+        theta : float, optional
+            Fixed Z-rotation angle; if None, optimizes over theta.
+            
+        Returns
+        -------
+        tuple
+            (fidelity_with_leakage, optimal_theta, leakage_contribution) where:
+            - fidelity_with_leakage: Fidelity with |L0⟩ treated as |0⟩
+            - optimal_theta: Z-rotation angle used
+            - leakage_contribution: Additional fidelity from L0 misidentification
+        """
+        if state_initial is None:
+            state_initial = self.psi0
+        
+        # Build the L0→0 mapping transformation
+        # Single-atom mapping: |L0⟩ (idx 8) → |0⟩ (idx 0)
+        # This is a partial isometry that maps L0 population to 0
+        V_sq = jnp.eye(self.levels, dtype=jnp.complex128)
+        # Add mapping: when we measure, |L0⟩ appears as |0⟩
+        # We create a projector that combines |0⟩ and |L0⟩ into effective |0⟩
+        
+        # For density matrix transformation, we need to:
+        # 1. Add L0 diagonal population to 0 diagonal
+        # 2. Add L0 coherences to 0 coherences
+        
+        # Two-qubit indices:
+        # |0,0⟩ = 0, |0,L0⟩ = 8, |L0,0⟩ = 80, |L0,L0⟩ = 88
+        # |0,1⟩ = 1, |L0,1⟩ = 81
+        # |1,0⟩ = 10, |1,L0⟩ = 18
+        # |1,1⟩ = 11, |L0,L0⟩ already covered
+        
+        # Create effective density matrix with L0 → 0 mapping
+        rho = state_final.copy()
+        rho_eff = jnp.zeros_like(rho)
+        
+        # Map indices: for each state |i,j⟩, if i=L0(8) map to i=0, if j=L0(8) map to j=0
+        L0_idx = 8  # |L0⟩ single-atom index
+        zero_idx = 0  # |0⟩ single-atom index
+        
+        for i in range(self.levels):
+            for j in range(self.levels):
+                # Original two-qubit index
+                orig_i = i
+                orig_j = j
+                
+                # Map L0 → 0 for both atoms
+                eff_i = zero_idx if i == L0_idx else i
+                eff_j = zero_idx if j == L0_idx else j
+                
+                # Two-qubit indices
+                orig_idx_row = orig_i * self.levels + orig_j
+                orig_idx_col_start = orig_i * self.levels
+                eff_idx_row = eff_i * self.levels + eff_j
+                
+                for k in range(self.levels):
+                    for l in range(self.levels):
+                        orig_k = k
+                        orig_l = l
+                        eff_k = zero_idx if k == L0_idx else k
+                        eff_l = zero_idx if l == L0_idx else l
+                        
+                        orig_idx = (orig_i * self.levels + orig_j, orig_k * self.levels + orig_l)
+                        eff_idx = (eff_i * self.levels + eff_j, eff_k * self.levels + eff_l)
+                        
+                        rho_eff = rho_eff.at[eff_idx].add(rho[orig_idx])
+        
+        # Now calculate fidelity with the effective density matrix
+        CZ_psi0 = self.CZ_ideal() @ state_initial
+        
+        # Also map the initial state if it has L0 component (usually it doesn't)
+        psi_eff = state_initial.copy()
+        for i in range(self.levels):
+            for j in range(self.levels):
+                if i == L0_idx or j == L0_idx:
+                    eff_i = zero_idx if i == L0_idx else i
+                    eff_j = zero_idx if j == L0_idx else j
+                    orig_idx = i * self.levels + j
+                    eff_idx = eff_i * self.levels + eff_j
+                    psi_eff = psi_eff.at[eff_idx].add(state_initial[orig_idx])
+                    if i == L0_idx or j == L0_idx:
+                        psi_eff = psi_eff.at[orig_idx].set(0)
+        
+        # Calculate standard fidelity for comparison
+        fid_standard, theta_std = self.CZ_fidelity(state_final, state_initial, theta)
+        
+        if theta is None:
+            theta = theta_std
+        
+        # Calculate fidelity with effective (L0→0 mapped) density matrix
+        U_theta = jnp.array(block_diag(gates.rz(theta).full(), np.eye(8)), dtype=jnp.complex128)
+        U_theta_tq = jnp.kron(U_theta, U_theta)
+        
+        theta_CZ_psi0 = U_theta_tq @ CZ_psi0
+        fid_with_leakage = jnp.abs(jnp.conj(theta_CZ_psi0).T @ rho_eff @ theta_CZ_psi0)[0, 0]
+        
+        # Leakage contribution is the difference
+        leakage_contribution = float(fid_with_leakage - fid_standard)
+        
+        return float(fid_with_leakage), float(theta), leakage_contribution
     
     def CZ_back_to_00(self, state_final, state_idx, state_initial=None, theta=None):
         """Apply recovery operations to map final state back to |00⟩ basis.

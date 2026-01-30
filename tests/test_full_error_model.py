@@ -588,3 +588,105 @@ class TestInfidelityDiagnostics:
             import os
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+
+class TestCZFidelityWithLeakage:
+    """Tests for CZ_fidelity_with_leakage method (Issue #4)."""
+
+    @pytest.fixture(scope="class")
+    def model(self):
+        return jax_atom_Evolution()
+
+    def test_returns_three_values(self, model):
+        """CZ_fidelity_with_leakage should return (fidelity, theta, leakage_contribution)."""
+        psi0 = model.SSS_initial_state_list[5]  # |11⟩
+        rho0 = model.psi_to_rho(psi0)
+        
+        # Apply ideal CZ
+        CZ = model.CZ_ideal()
+        rho_final = CZ @ rho0 @ jnp.conj(CZ).T
+        
+        result = model.CZ_fidelity_with_leakage(rho_final, psi0)
+        
+        assert len(result) == 3
+        fid, theta, leakage = result
+        assert isinstance(fid, float)
+        assert isinstance(theta, float)
+        assert isinstance(leakage, float)
+
+    def test_fidelity_bounded(self, model):
+        """Fidelity with leakage should be bounded [0, 1] (with numerical tolerance)."""
+        psi0 = model.SSS_initial_state_list[5]
+        rho0 = model.psi_to_rho(psi0)
+        
+        CZ = model.CZ_ideal()
+        rho_final = CZ @ rho0 @ jnp.conj(CZ).T
+        
+        fid, theta, leakage = model.CZ_fidelity_with_leakage(rho_final, psi0)
+        
+        # Allow small numerical errors beyond [0, 1]
+        assert -1e-9 <= fid <= 1 + 1e-9
+
+    def test_perfect_gate_fidelity(self, model):
+        """For ideal CZ without leakage, fidelity should be ~1."""
+        psi0 = model.SSS_initial_state_list[5]
+        rho0 = model.psi_to_rho(psi0)
+        
+        CZ = model.CZ_ideal()
+        rho_final = CZ @ rho0 @ jnp.conj(CZ).T
+        
+        fid, theta, leakage = model.CZ_fidelity_with_leakage(rho_final, psi0)
+        
+        # For perfect gate, fidelity should be 1, leakage contribution 0
+        assert fid == pytest.approx(1.0, abs=1e-5)
+        assert leakage == pytest.approx(0.0, abs=1e-5)
+
+    def test_leakage_increases_fidelity(self, model):
+        """When L0 population exists, fidelity_with_leakage >= standard fidelity."""
+        psi0 = model.SSS_initial_state_list[5]
+        rho0 = model.psi_to_rho(psi0)
+        
+        # Create a state with some L0 leakage
+        CZ = model.CZ_ideal()
+        rho_final = CZ @ rho0 @ jnp.conj(CZ).T
+        
+        # Add artificial L0 leakage
+        # |L0,L0⟩ = index 88
+        rho_with_leakage = rho_final.at[88, 88].add(0.01)
+        rho_with_leakage = rho_with_leakage.at[11, 11].add(-0.01)  # Remove from |11⟩
+        
+        fid_standard, theta = model.CZ_fidelity(rho_with_leakage, psi0)
+        fid_with_leak, _, leakage_contrib = model.CZ_fidelity_with_leakage(
+            rho_with_leakage, psi0, theta
+        )
+        
+        # Fidelity with leakage should be >= standard
+        # (L0 population maps to 0, which may or may not help depending on ideal state)
+        assert fid_with_leak >= fid_standard - 0.001  # Allow small numerical error
+
+    def test_fixed_theta_accepted(self, model):
+        """Should accept fixed theta parameter."""
+        psi0 = model.SSS_initial_state_list[5]
+        rho0 = model.psi_to_rho(psi0)
+        
+        CZ = model.CZ_ideal()
+        rho_final = CZ @ rho0 @ jnp.conj(CZ).T
+        
+        fid, theta, leakage = model.CZ_fidelity_with_leakage(rho_final, psi0, theta=0.5)
+        
+        assert theta == 0.5
+
+    def test_consistency_with_standard_no_leakage(self, model):
+        """Without L0 population, should give same result as standard fidelity."""
+        psi0 = model.SSS_initial_state_list[4]  # |00⟩
+        rho0 = model.psi_to_rho(psi0)
+        
+        # For |00⟩, CZ does nothing, no leakage expected
+        CZ = model.CZ_ideal()
+        rho_final = CZ @ rho0 @ jnp.conj(CZ).T
+        
+        fid_standard, theta = model.CZ_fidelity(rho_final, psi0)
+        fid_with_leak, _, leakage = model.CZ_fidelity_with_leakage(rho_final, psi0, theta)
+        
+        # Should be very close (only numerical differences)
+        assert fid_with_leak == pytest.approx(fid_standard, abs=1e-4)
