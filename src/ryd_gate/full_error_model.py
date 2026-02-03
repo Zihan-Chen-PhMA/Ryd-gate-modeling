@@ -8,6 +8,7 @@ from qutip.random_objects import rand_unitary
 from scipy.linalg import block_diag
 from scipy.optimize import minimize_scalar
 from scipy import integrate
+from scipy.constants import k as kB, hbar
 from collections import defaultdict
 from arc import Rubidium87
 from arc.wigner import Wigner6j, CG
@@ -1699,5 +1700,255 @@ class jax_atom_Evolution():
             print(f"Figure saved to {save_path}")
         else:
             plt.show()
-        
+
         return populations
+
+    def velocity_thermal_sample(self, T_atom, rng=None):
+        """Sample velocity from Maxwell-Boltzmann distribution.
+
+        Parameters
+        ----------
+        T_atom : float
+            Atomic temperature in microkelvin (μK).
+        rng : numpy.random.Generator, optional
+            Random number generator for reproducibility.
+
+        Returns
+        -------
+        float
+            Sampled velocity in m/s.
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+        T_K = T_atom * 1e-6
+        m_Rb = self.atom.mass * 1e-3  # arc gives mass in amu, convert to kg
+        std = np.sqrt(kB * T_K / m_Rb)
+        return rng.normal(0, std)
+
+    def doppler_shift(self, T_atom, rng=None):
+        """Compute a random Doppler shift from thermal motion.
+
+        Uses counter-propagating 420 nm and 1013 nm beams so the effective
+        wave vector is k_420 - k_1013.
+
+        Parameters
+        ----------
+        T_atom : float
+            Atomic temperature in μK.
+        rng : numpy.random.Generator, optional
+            Random number generator.
+
+        Returns
+        -------
+        float
+            Doppler shift in MHz (angular frequency / 2π).
+        """
+        v = self.velocity_thermal_sample(T_atom, rng=rng)
+        k_420 = 2 * np.pi / 420e-9
+        k_1013 = 2 * np.pi / 1013e-9
+        k_eff = k_420 - k_1013
+        return k_eff * v / (2 * np.pi) * 1e-6  # Hz -> MHz
+
+    def doppler_std(self, T_atom):
+        """RMS Doppler broadening in MHz.
+
+        Parameters
+        ----------
+        T_atom : float
+            Atomic temperature in μK.
+
+        Returns
+        -------
+        float
+            Standard deviation of Doppler shift in MHz.
+        """
+        T_K = T_atom * 1e-6
+        m_Rb = self.atom.mass * 1e-3
+        v_std = np.sqrt(kB * T_K / m_Rb)
+        k_420 = 2 * np.pi / 420e-9
+        k_1013 = 2 * np.pi / 1013e-9
+        k_eff = k_420 - k_1013
+        return k_eff * v_std / (2 * np.pi) * 1e-6  # MHz
+
+    def position_thermal_sample(self, T_atom, trap_freq, rng=None):
+        """Sample position displacement from a thermal harmonic trap.
+
+        For an atom in a harmonic trap at temperature *T_atom*, the position
+        spread is Gaussian with standard deviation
+        ``sqrt(k_B T / (m omega^2))`` where ``omega = 2 pi * trap_freq``.
+
+        Parameters
+        ----------
+        T_atom : float
+            Atomic temperature in μK.
+        trap_freq : float
+            Trap frequency in kHz.
+        rng : numpy.random.Generator, optional
+            Random number generator for reproducibility.
+
+        Returns
+        -------
+        float
+            Position displacement in μm.
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+        T_K = T_atom * 1e-6
+        m_Rb = self.atom.mass * 1e-3  # kg
+        omega = 2 * np.pi * trap_freq * 1e3  # rad/s
+        if omega == 0 or T_K == 0:
+            return 0.0
+        std_m = np.sqrt(kB * T_K / (m_Rb * omega ** 2))  # metres
+        std_um = std_m * 1e6  # micrometres
+        return rng.normal(0, std_um)
+
+    def position_spread_std(self, T_atom, trap_freq):
+        """RMS position spread in μm for an atom in a thermal harmonic trap.
+
+        Parameters
+        ----------
+        T_atom : float
+            Atomic temperature in μK.
+        trap_freq : float
+            Trap frequency in kHz.
+
+        Returns
+        -------
+        float
+            Position standard deviation in μm.
+        """
+        T_K = T_atom * 1e-6
+        m_Rb = self.atom.mass * 1e-3
+        omega = 2 * np.pi * trap_freq * 1e3
+        if omega == 0 or T_K == 0:
+            return 0.0
+        return np.sqrt(kB * T_K / (m_Rb * omega ** 2)) * 1e6
+
+    def simulate_with_thermal_effects(self, tlist, amp_420, phase_420, amp_1013,
+                                       T_atom, n_samples=100, rho0_list=None,
+                                       seed=None, trap_freq=None):
+        """Monte Carlo simulation averaging over thermal Doppler shifts.
+
+        For each sample a random Doppler shift is drawn and applied to the
+        Rydberg state energies (diagonal elements for r1 and r2 in the
+        single-atom Hamiltonian). The simulation is run and fidelities are
+        collected.
+
+        When *trap_freq* is provided, position spread from a thermal harmonic
+        trap is also sampled for each atom. The interatomic distance is
+        modified as ``d + delta_x1 - delta_x2`` (1-D along the interatomic
+        axis) and the blockade Hamiltonian is recomputed accordingly.
+
+        Parameters
+        ----------
+        tlist : array
+            Time points for evolution (μs).
+        amp_420, phase_420, amp_1013 : callable
+            Pulse functions.
+        T_atom : float
+            Atomic temperature in μK.
+        n_samples : int
+            Number of Monte Carlo samples.
+        rho0_list : list of arrays, optional
+            Initial density matrices. If None, uses self.rho0.
+        seed : int, optional
+            RNG seed for reproducibility.
+        trap_freq : float, optional
+            Trap frequency in kHz. If provided, position spread is sampled
+            and the blockade interaction ``V = C6/d^6`` is recomputed per
+            sample.
+
+        Returns
+        -------
+        dict
+            Keys: ``mean_fidelity``, ``std_fidelity``, ``fidelity_list``,
+            ``doppler_shifts``.  When *trap_freq* is given, also includes
+            ``position_shifts`` (list of (delta_x1, delta_x2) tuples in μm).
+        """
+        rng = np.random.default_rng(seed)
+
+        # Save originals
+        orig_Hconst = self.Hconst.copy()
+        orig_Hconst_tq = self.Hconst_tq.copy()
+        orig_diag = self.H_diag_tq_sparse.copy()
+        orig_diag_conj = self.H_diag_tq_sparse_conj.copy()
+        orig_Hblockade = self.Hblockade.copy()
+        orig_V = self.V
+        orig_d = self.d
+
+        fidelity_list = []
+        doppler_shifts = []
+        position_shifts = [] if trap_freq is not None else None
+
+        for _ in range(n_samples):
+            delta_f = self.doppler_shift(T_atom, rng=rng)
+            doppler_shifts.append(delta_f)
+
+            # Doppler shift in angular frequency (internal units are rad*MHz)
+            delta_omega = 2 * np.pi * delta_f
+
+            # Modify single-atom Hconst diagonal for r1 (5) and r2 (6)
+            Hconst_mod = orig_Hconst.at[5, 5].add(delta_omega)
+            Hconst_mod = Hconst_mod.at[6, 6].add(delta_omega)
+
+            # Position spread: modify blockade if trap_freq given
+            if trap_freq is not None:
+                dx1 = self.position_thermal_sample(T_atom, trap_freq, rng=rng)
+                dx2 = self.position_thermal_sample(T_atom, trap_freq, rng=rng)
+                position_shifts.append((dx1, dx2))
+                d_sample = self.default_d + dx1 - dx2
+                # Clamp to avoid negative/zero distance
+                d_sample = max(d_sample, 0.1)
+                V_sample = self.C6 / d_sample ** 6
+                Hblockade_sample = V_sample * jnp.kron(self.ryd_opt, self.ryd_opt)
+                self.V = V_sample
+                self.d = d_sample
+            else:
+                Hblockade_sample = orig_Hblockade
+
+            # Reconstruct two-qubit Hamiltonian
+            Hconst_tq_mod = (jnp.kron(jnp.eye(self.levels), Hconst_mod) +
+                             jnp.kron(Hconst_mod, jnp.eye(self.levels)) +
+                             Hblockade_sample)
+
+            self.Hconst_tq = Hconst_tq_mod
+            self.Hblockade = Hblockade_sample
+            self.H_diag_tq_sparse = jnp.diag(Hconst_tq_mod)
+            self.H_diag_tq_sparse_conj = jnp.conj(self.H_diag_tq_sparse)
+
+            if rho0_list is not None:
+                sol = self.integrate_rho_multi_jax(tlist, amp_420, phase_420,
+                                                   amp_1013, rho0_list)
+                # Average fidelity over initial states
+                fids = []
+                for k, rho0 in enumerate(rho0_list):
+                    psi0 = self.SSS_initial_state_list[k] if k < len(self.SSS_initial_state_list) else self.psi0
+                    rho_final = sol[k, -1]
+                    fid, _ = self.CZ_fidelity(rho_final, state_initial=psi0)
+                    fids.append(float(fid))
+                fidelity_list.append(np.mean(fids))
+            else:
+                sol = self.integrate_rho_jax(tlist, amp_420, phase_420, amp_1013)
+                rho_final = sol[-1]
+                fid, _ = self.CZ_fidelity(rho_final)
+                fidelity_list.append(float(fid))
+
+        # Restore originals
+        self.Hconst = orig_Hconst
+        self.Hconst_tq = orig_Hconst_tq
+        self.H_diag_tq_sparse = orig_diag
+        self.H_diag_tq_sparse_conj = orig_diag_conj
+        self.Hblockade = orig_Hblockade
+        self.V = orig_V
+        self.d = orig_d
+
+        fidelity_arr = np.array(fidelity_list)
+        result = {
+            'mean_fidelity': float(np.mean(fidelity_arr)),
+            'std_fidelity': float(np.std(fidelity_arr)),
+            'fidelity_list': fidelity_arr.tolist(),
+            'doppler_shifts': doppler_shifts,
+        }
+        if position_shifts is not None:
+            result['position_shifts'] = position_shifts
+        return result
