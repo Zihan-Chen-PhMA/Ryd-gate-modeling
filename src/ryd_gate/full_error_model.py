@@ -100,7 +100,7 @@ class jax_atom_Evolution():
         self.cops_sparse = []
 
         if ryd_decay:
-            self.Gamma_BBR = 1 / 410.41 #MHz
+            self.Gamma_BBR = 1 / 151.55 - 1 / 410.41 #MHz
         else:
             self.Gamma_BBR = 0
         self.cops_BBR = jnp.sqrt(self.Gamma_BBR)*self.state_rP*jnp.conj(self.state_r1).T
@@ -109,7 +109,7 @@ class jax_atom_Evolution():
             self.cops_sparse.append([self.Gamma_BBR, self.level_dict['r1']['idx'], self.level_dict['rP']['idx']])
 
         if ryd_decay:
-            self.Gamma_RD = 1 / 151.55 - 1 / 410.41 #MHz
+            self.Gamma_RD = 1 / 410.41 #MHz
         else:
             self.Gamma_RD = 0
         self.rydberg_RD_branch_ratio()
