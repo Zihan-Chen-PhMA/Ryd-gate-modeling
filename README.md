@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/ChanceSiyuan/Ryd-gate-modeling/graph/badge.svg)](https://codecov.io/gh/ChanceSiyuan/Ryd-gate-modeling)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-201%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-286%20passed-brightgreen.svg)](tests/)
 
 Simulation and optimization of Rydberg-atom entangling gates for neutral-atom quantum computing.
 
