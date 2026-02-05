@@ -30,3 +30,11 @@ Thumbs.db
 
 # Sphinx docs
 docs/_build/
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# Lock files
+uv.lock

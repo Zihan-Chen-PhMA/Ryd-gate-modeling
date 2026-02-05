@@ -47,3 +47,30 @@ class TestBlackmanPulse:
         t = np.linspace(0, 1.0, 500)
         vals = blackman_pulse_sqrt(t, 0.1, 1.0)
         assert np.all(vals >= 0)
+
+    def test_sqrt_raises_on_short_gate(self):
+        """blackman_pulse_sqrt should raise for t_gate < 2*t_rise."""
+        with pytest.raises(ValueError):
+            blackman_pulse_sqrt(0.5, 1.0, 1.0)
+
+    def test_pulse_rise_and_fall(self):
+        """Pulse should rise and fall with Blackman shape."""
+        t_rise = 0.2
+        t_gate = 1.0
+        t = np.linspace(0, t_gate, 500)
+        vals = blackman_pulse(t, t_rise, t_gate)
+        
+        # Should start near zero
+        assert vals[0] == pytest.approx(0.0, abs=0.01)
+        # Should end near zero
+        assert vals[-1] == pytest.approx(0.0, abs=0.01)
+        # Should have max of 1
+        assert np.max(vals) == pytest.approx(1.0, abs=0.01)
+
+    def test_sqrt_flat_top(self):
+        """Sqrt pulse should be ~1.0 in flat-top region."""
+        t_rise = 0.1
+        t_gate = 1.0
+        t_flat = np.linspace(t_rise + 0.01, t_gate - t_rise - 0.01, 100)
+        vals = blackman_pulse_sqrt(t_flat, t_rise, t_gate)
+        np.testing.assert_allclose(vals, 1.0, atol=1e-5)
