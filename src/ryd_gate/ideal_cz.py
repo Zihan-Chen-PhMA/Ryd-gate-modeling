@@ -167,17 +167,20 @@ class CZGateSimulator:
             Whether to include decay rates in the Hamiltonian.
         """
         self.atom = Rubidium87()
-
+        self.temperature = 300 # K
         # Rydberg level and laser parameters
         self.ryd_level = 70
         # Assumes rabi_420 = rabi_1013, effective Rabi = 7 MHz
-        self.Delta = 2 * np.pi * 6.1e9  # Intermediate detuning (rad/s)
-        self.rabi_eff = 2 * np.pi * 7e6  # Effective two-photon Rabi (rad/s)
-        self.rabi_420 = np.sqrt(2 * self.Delta * self.rabi_eff)
-        self.rabi_1013 = np.sqrt(2 * self.Delta * self.rabi_eff)
+        self.Delta = 2 * np.pi * 9.1e9  # Intermediate detuning (rad/s)
+        self.rabi_420 = 2*np.pi*(491)*10**(6)
+        self.rabi_1013 = 2*np.pi*(185)*10**(6)
+        self.rabi_eff = self.rabi_420*self.rabi_1013/(2*self.Delta) # Effective two-photon Rabi (rad/s)
         self.time_scale = 2 * np.pi / self.rabi_eff
 
         # Dipole matrix element ratios for off-resonant transitions
+        # Since we use sigma- polarization, we count the branch
+        # (mJ = -1/2, mI = 1/2) -> (mJ = -3/2, mI = 1/2)
+        # (mJ = 1/2, mI = -1/2) -> (mJ = -1/2, mI = -1/2)
         self.d_mid_ratio = self.atom.getDipoleMatrixElement(
             5, 0, 0.5, 0.5, 6, 1, 1.5, -0.5, -1
         ) / self.atom.getDipoleMatrixElement(5, 0, 0.5, -0.5, 6, 1, 1.5, -1.5, -1)
@@ -190,14 +193,20 @@ class CZGateSimulator:
         self.rabi_1013_garbage = self.rabi_1013 * self.d_ryd_ratio
 
         # Rydberg interaction and Zeeman shift
-        self.v_ryd = 2 * np.pi * 874e9 / 4**6  # Van der Waals at ~4 μm
-        self.v_ryd_garb = 2 * np.pi * 874e9 / 4**6
+        # The real value of C_6 is C_6= h* 1337GHz*um^6 based on https://arxiv.org/pdf/1506.08463
+        # In our simulation, we use  rescaled schrodinger equation $i\partial_t \psi = H/\hbar \psi$
+        # So we take C_6 = h*1337GHz*um^6/(hbar) = (2 pi)*1337GHz*um^6
+        self.v_ryd = 2 * np.pi * 874e9 / 3**6  # Van der Waals at ~3 μm
+        self.v_ryd_garb = 2 * np.pi * 874e9 /3**6 # Suppose the garbage state has the identical van der Waals interaction
         self.ryd_zeeman_shift = -2 * np.pi * 56e6
 
         # Decay rate parameters
-        self.mid_state_decay_rate = 1 / (110e-9)  # 6P3/2 lifetime ~110 ns
-        self.mid_garb_decay_rate = 1 / (110e-9)
-        self.ryd_state_decay_rate = 1 / (151.55e-6)  # 70S lifetime ~152 μs
+        # 6P3/2 lifetime 120.7 ± 1.2 ns, refer from https://arxiv.org/abs/physics/0409077
+        self.mid_state_decay_rate = 1 / (110.7e-9)  
+        self.mid_garb_decay_rate = 1 / (110.7e-9)
+        # refer to the data from https://arxiv.org/abs/0810.0339, Table VII, 70S1/2 @ 300 K
+        self.ryd_state_decay_rate = 1 / (151.55e-6)  
+        # Suppose the garbage state has the identical decay rate
         self.ryd_garb_decay_rate = 1 / (151.55e-6)
 
         # Build Hamiltonians
@@ -241,7 +250,7 @@ class CZGateSimulator:
         # Rydberg interaction and Zeeman shift
         self.v_ryd = 2 * np.pi * 450e6
         self.v_ryd_garb = 2 * np.pi * 450e6
-        self.ryd_zeeman_shift = -2 * np.pi * 2.4e9
+        self.ryd_zeeman_shift = 2 * np.pi * 2.4e9
 
         # Decay rate parameters
         self.mid_state_decay_rate = 1 / (110e-9)
@@ -751,7 +760,6 @@ class CZGateSimulator:
 
         # Average gate fidelity formula
         avg_F = (1 / 20) * (abs(1 + 2 * a01 + a11) ** 2 + 1 + 2 * abs(a01) ** 2 + abs(a11) ** 2)
-        print(1 - avg_F)
         return 1 - avg_F
 
     def _optimization_TO(self, x: list[float]) -> object:
@@ -794,7 +802,10 @@ class CZGateSimulator:
         return optimres
 
     def _diagnose_run_TO(
-        self, x: list[float], initial: Literal["00", "01", "10", "11"]
+        self, x: list[float],
+        initial: Literal["00", "01", "10", "11",
+                         "SSS-0", "SSS-1", "SSS-2", "SSS-3", "SSS-4", "SSS-5",
+                         "SSS-6", "SSS-7", "SSS-8", "SSS-9", "SSS-10", "SSS-11"]
     ) -> list[NDArray[np.floating]]:
         """Run TO simulation and return population time series.
 
@@ -802,32 +813,46 @@ class CZGateSimulator:
         ----------
         x : list of float
             TO parameters [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale].
-        initial : {'00', '01', '10', '11'}
-            Initial two-qubit state.
+        initial : str
+            Initial two-qubit state. Supports computational basis states
+            ('00', '01', '10', '11') and SSS states ('SSS-0' through 'SSS-11').
 
         Returns
         -------
         list of ndarray
             [mid_state_pop, ryd_state_pop, ryd_garb_pop] arrays.
         """
-        if initial == "11":
-            ini_state = np.kron(
-                [0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
-            )
-        elif initial == "10":
-            ini_state = np.kron(
-                [0, 1 + 0j, 0, 0, 0, 0, 0], [1 + 0j, 0, 0, 0, 0, 0, 0]
-            )
-        elif initial == "01":
-            ini_state = np.kron(
-                [1 + 0j, 0, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
-            )
-        elif initial == "00":
-            ini_state = np.kron(
-                [1 + 0j, 0, 0, 0, 0, 0, 0], [1 + 0j, 0, 0, 0, 0, 0, 0]
-            )
-        else:
+        # Build basis states
+        s0 = np.array([1, 0, 0, 0, 0, 0, 0], dtype=complex)
+        s1 = np.array([0, 1, 0, 0, 0, 0, 0], dtype=complex)
+        state_00 = np.kron(s0, s0)
+        state_01 = np.kron(s0, s1)
+        state_10 = np.kron(s1, s0)
+        state_11 = np.kron(s1, s1)
+
+        # Map labels to state vectors
+        sss_states = {
+            "00": state_00,
+            "01": state_01,
+            "10": state_10,
+            "11": state_11,
+            "SSS-0": 0.5*state_00 + 0.5*state_01 + 0.5*state_10 + 0.5*state_11,
+            "SSS-1": 0.5*state_00 - 0.5*state_01 - 0.5*state_10 + 0.5*state_11,
+            "SSS-2": 0.5*state_00 + 0.5j*state_01 + 0.5j*state_10 - 0.5*state_11,
+            "SSS-3": 0.5*state_00 - 0.5j*state_01 - 0.5j*state_10 - 0.5*state_11,
+            "SSS-4": state_00,
+            "SSS-5": state_11,
+            "SSS-6": 0.5*state_00 + 0.5*state_01 + 0.5*state_10 - 0.5*state_11,
+            "SSS-7": 0.5*state_00 - 0.5*state_01 - 0.5*state_10 - 0.5*state_11,
+            "SSS-8": 0.5*state_00 + 0.5j*state_01 + 0.5j*state_10 + 0.5*state_11,
+            "SSS-9": 0.5*state_00 - 0.5j*state_01 - 0.5j*state_10 + 0.5*state_11,
+            "SSS-10": state_00/np.sqrt(2) + 1j*state_11/np.sqrt(2),
+            "SSS-11": state_00/np.sqrt(2) - 1j*state_11/np.sqrt(2),
+        }
+
+        if initial not in sss_states:
             raise ValueError(f"Unsupported initial state: '{initial}'")
+        ini_state = sss_states[initial]
 
         # res_list[:, t] stores state at time t_gate * t/999
         res_list = self._get_gate_result_TO(
@@ -881,7 +906,10 @@ class CZGateSimulator:
         ]
 
     def _diagnose_plot_TO(
-        self, x: list[float], initial: Literal["00", "01", "10", "11"]
+        self, x: list[float],
+        initial: Literal["00", "01", "10", "11",
+                         "SSS-0", "SSS-1", "SSS-2", "SSS-3", "SSS-4", "SSS-5",
+                         "SSS-6", "SSS-7", "SSS-8", "SSS-9", "SSS-10", "SSS-11"]
     ) -> None:
         """Generate population evolution plot for TO strategy.
 
