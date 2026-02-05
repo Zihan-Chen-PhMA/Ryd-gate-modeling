@@ -139,11 +139,28 @@ class CZGateSimulator:
         param_set: Literal["our", "lukin"] = "our",
         strategy: Literal["TO", "AR"] = "AR",
         blackmanflag: bool = True,
+        detuning_sign: Literal[1, -1] = 1,
     ) -> None:
-        """Initialize the CZ gate simulator with specified parameters."""
+        """Initialize the CZ gate simulator with specified parameters.
+
+        Parameters
+        ----------
+        decayflag : bool
+            Whether to include decay rates in the Hamiltonian.
+        param_set : {'our', 'lukin'}
+            Parameter set to use.
+        strategy : {'TO', 'AR'}
+            Pulse optimization strategy.
+        blackmanflag : bool
+            Whether to use Blackman envelope.
+        detuning_sign : {1, -1}
+            Sign of intermediate detuning. +1 for blue/bright detuning,
+            -1 for red/dark detuning.
+        """
         self.param_set = param_set
         self.strategy = strategy
         self.blackmanflag = blackmanflag
+        self.detuning_sign = detuning_sign
 
         if param_set == "our":
             self._init_our_params(decayflag)
@@ -171,10 +188,11 @@ class CZGateSimulator:
         # Rydberg level and laser parameters
         self.ryd_level = 70
         # Assumes rabi_420 = rabi_1013, effective Rabi = 7 MHz
-        self.Delta = 2 * np.pi * 9.1e9  # Intermediate detuning (rad/s)
+        # detuning_sign: +1 for blue/bright, -1 for red/dark
+        self.Delta = self.detuning_sign * 2 * np.pi * 9.1e9  # Intermediate detuning (rad/s)
         self.rabi_420 = 2*np.pi*(491)*10**(6)
         self.rabi_1013 = 2*np.pi*(185)*10**(6)
-        self.rabi_eff = self.rabi_420*self.rabi_1013/(2*self.Delta) # Effective two-photon Rabi (rad/s)
+        self.rabi_eff = self.rabi_420*self.rabi_1013/(2*abs(self.Delta)) # Effective two-photon Rabi (rad/s)
         self.time_scale = 2 * np.pi / self.rabi_eff
 
         # Dipole matrix element ratios for off-resonant transitions
@@ -198,7 +216,7 @@ class CZGateSimulator:
         # So we take C_6 = h*1337GHz*um^6/(hbar) = (2 pi)*1337GHz*um^6
         self.v_ryd = 2 * np.pi * 874e9 / 3**6  # Van der Waals at ~3 μm
         self.v_ryd_garb = 2 * np.pi * 874e9 /3**6 # Suppose the garbage state has the identical van der Waals interaction
-        self.ryd_zeeman_shift = -2 * np.pi * 56e6
+        self.ryd_zeeman_shift = 2 * np.pi * 56e6
 
         # Decay rate parameters
         # 6P3/2 lifetime 120.7 ± 1.2 ns, refer from https://arxiv.org/abs/physics/0409077
@@ -229,10 +247,11 @@ class CZGateSimulator:
 
         # Rydberg level and laser parameters
         self.ryd_level = 53
-        self.Delta = 2 * np.pi * 7.8e9  # Intermediate detuning (rad/s)
+        # detuning_sign: +1 for blue/bright, -1 for red/dark
+        self.Delta = self.detuning_sign * 2 * np.pi * 7.8e9  # Intermediate detuning (rad/s)
         self.rabi_420 = 2 * np.pi * 237e6
         self.rabi_1013 = 2 * np.pi * 303e6
-        self.rabi_eff = self.rabi_420 * self.rabi_1013 / (2 * self.Delta)
+        self.rabi_eff = self.rabi_420 * self.rabi_1013 / (2 * abs(self.Delta))
         self.time_scale = 2 * np.pi / self.rabi_eff
 
         # Dipole matrix element ratios (different polarization than 'our')
