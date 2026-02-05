@@ -1,7 +1,7 @@
 # ryd-gate
 
 [![CI](https://github.com/ChanceSiyuan/Ryd-gate-modeling/actions/workflows/ci.yml/badge.svg)](https://github.com/ChanceSiyuan/Ryd-gate-modeling/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/ChanceSiyuan/Ryd-gate-modeling/graph/badge.svg)](https://codecov.io/gh/ChanceSiyuan/Ryd-gate-modeling)
+[![Coverage](https://img.shields.io/badge/coverage-81%25-brightgreen.svg)](tests/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/tests-286%20passed-brightgreen.svg)](tests/)
