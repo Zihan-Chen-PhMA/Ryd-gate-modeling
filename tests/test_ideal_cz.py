@@ -380,3 +380,242 @@ def test_analytical_pulse_shape():
 
     val = PulseOptimizer._analytical_pulse_shape(0, A=1, B=0, w=1, p1=0, p2=0, C=0, D=5)
     assert val == pytest.approx(5.0)
+
+
+# ==================================================================
+# TESTS FOR MONTE CARLO SIMULATION
+# ==================================================================
+
+
+class TestMonteCarloSimulation:
+    """Tests for quasi-static Monte Carlo simulation capabilities."""
+
+    def test_monte_carlo_result_dataclass(self):
+        """MonteCarloResult dataclass should be importable and have correct fields."""
+        from ryd_gate.ideal_cz import MonteCarloResult
+
+        result = MonteCarloResult(
+            mean_fidelity=0.99,
+            std_fidelity=0.01,
+            mean_infidelity=0.01,
+            std_infidelity=0.01,
+            n_shots=100,
+            fidelities=np.array([0.99] * 100),
+        )
+        assert result.mean_fidelity == 0.99
+        assert result.n_shots == 100
+
+    def test_run_monte_carlo_basic_TO(self):
+        """run_monte_carlo_simulation should run with TO strategy."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_simulation(x, n_shots=10, T2_star=3e-6, seed=42)
+
+        assert result.n_shots == 10
+        assert len(result.fidelities) == 10
+        assert 0 <= result.mean_fidelity <= 1
+        assert result.std_fidelity >= 0
+        assert result.detuning_samples is not None
+        assert len(result.detuning_samples) == 10
+
+    def test_run_monte_carlo_basic_AR(self):
+        """run_monte_carlo_simulation should run with AR strategy."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        x = [1.0, 0.5, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0]
+        result = sim.run_monte_carlo_simulation(x, n_shots=10, T2_star=3e-6, seed=42)
+
+        assert result.n_shots == 10
+        assert len(result.fidelities) == 10
+
+    def test_run_monte_carlo_t2_star_only(self):
+        """Monte Carlo with only T2* dephasing should produce detuning samples."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_simulation(
+            x, n_shots=50, T2_star=3e-6, temperature=None, seed=42
+        )
+
+        assert result.detuning_samples is not None
+        assert result.distance_samples is None
+        # Detuning samples should be non-zero with high probability
+        assert np.std(result.detuning_samples) > 0
+
+    def test_run_monte_carlo_position_only(self):
+        """Monte Carlo with only position fluctuations should produce distance samples."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_simulation(
+            x, n_shots=50, T2_star=None, temperature=15.0, trap_freq=50.0, seed=42
+        )
+
+        assert result.detuning_samples is None
+        assert result.distance_samples is not None
+        # Distance should fluctuate around nominal 3 μm
+        assert np.mean(result.distance_samples) == pytest.approx(3.0, rel=0.1)
+
+    def test_run_monte_carlo_both_error_sources(self):
+        """Monte Carlo with both error sources should produce both sample types."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_simulation(
+            x, n_shots=50, T2_star=3e-6, temperature=15.0, trap_freq=50.0, seed=42
+        )
+
+        assert result.detuning_samples is not None
+        assert result.distance_samples is not None
+
+    def test_run_monte_carlo_no_errors(self):
+        """Monte Carlo with no error sources should return consistent fidelity."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_simulation(
+            x, n_shots=10, T2_star=None, temperature=None, seed=42
+        )
+
+        # Without noise, all shots should give the same fidelity
+        assert result.std_fidelity == pytest.approx(0.0, abs=1e-10)
+        assert result.detuning_samples is None
+        assert result.distance_samples is None
+
+    def test_run_monte_carlo_sigma_pos_direct(self):
+        """Monte Carlo should accept sigma_pos directly instead of temperature."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_simulation(
+            x, n_shots=50, T2_star=None, sigma_pos=0.1, seed=42
+        )
+
+        assert result.distance_samples is not None
+        # With sigma_pos=0.1 μm, distances should be close to 3 μm
+        assert np.mean(result.distance_samples) == pytest.approx(3.0, rel=0.05)
+
+    def test_run_monte_carlo_reproducible(self):
+        """Monte Carlo with same seed should produce reproducible results."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+        result1 = sim.run_monte_carlo_simulation(x, n_shots=20, T2_star=3e-6, seed=123)
+        result2 = sim.run_monte_carlo_simulation(x, n_shots=20, T2_star=3e-6, seed=123)
+
+        np.testing.assert_array_equal(result1.fidelities, result2.fidelities)
+        np.testing.assert_array_equal(result1.detuning_samples, result2.detuning_samples)
+
+    def test_run_monte_carlo_invalid_temp_without_trap_freq(self):
+        """Monte Carlo should raise error if temperature is set without trap_freq."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+        with pytest.raises(ValueError, match="trap_freq"):
+            sim.run_monte_carlo_simulation(
+                x, n_shots=10, temperature=15.0, trap_freq=None, sigma_pos=None
+            )
+
+    def test_compute_detuning_sigma(self):
+        """_compute_detuning_sigma should return sqrt(2)/T2* in rad/s."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        T2_star = 3e-6  # 3 μs
+        sigma = sim._compute_detuning_sigma(T2_star)
+
+        expected = np.sqrt(2) / T2_star
+        assert sigma == pytest.approx(expected)
+
+    def test_compute_position_sigma(self):
+        """_compute_position_sigma should compute correct thermal position spread."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+
+        # Test with direct sigma_pos
+        sigma = sim._compute_position_sigma(None, None, 0.1)
+        assert sigma == 0.1
+
+        # Test with temperature and trap_freq
+        sigma = sim._compute_position_sigma(15.0, 50.0, None)
+        assert sigma > 0
+        # For T=15 μK, trap_freq=50 kHz, sigma should be ~0.05-0.1 μm
+        assert 0.01 < sigma < 0.5
+
+    def test_build_vdw_unit_operator(self):
+        """_build_vdw_unit_operator should return correct shape and structure."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        op = sim._build_vdw_unit_operator()
+
+        assert op.shape == (49, 49)
+        # Should be non-negative on diagonal
+        assert np.all(np.diag(op) >= 0)
+
+    def test_hamiltonian_restored_after_mc(self):
+        """Hamiltonian should be restored after Monte Carlo simulation."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+        # Store original
+        original_ham = sim.tq_ham_const.copy()
+        original_v_ryd = sim.v_ryd
+
+        # Run MC
+        sim.run_monte_carlo_simulation(x, n_shots=20, T2_star=3e-6, seed=42)
+
+        # Verify restored
+        np.testing.assert_array_equal(sim.tq_ham_const, original_ham)
+        assert sim.v_ryd == original_v_ryd
+
+    def test_get_error_budget(self):
+        """get_error_budget should return complete error breakdown."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+        budget = sim.get_error_budget(
+            x, n_shots=20, T2_star=3e-6, temperature=15.0, trap_freq=50.0, seed=42
+        )
+
+        assert "ideal_infidelity" in budget
+        assert "T2_star_infidelity" in budget
+        assert "position_infidelity" in budget
+        assert "total_infidelity" in budget
+        assert "T2_star_contribution" in budget
+        assert "position_contribution" in budget
+
+        # Contributions should be approximately non-negative (errors add infidelity)
+        # With small sample sizes, statistical fluctuations can cause small negative values
+        assert budget["T2_star_contribution"] >= -1e-3  # Allow statistical fluctuations
+        assert budget["position_contribution"] >= -1e-3
+
+    def test_monte_carlo_lukin_params(self):
+        """Monte Carlo should work with lukin parameter set."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="lukin", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_simulation(
+            x, n_shots=10, T2_star=3e-6, temperature=15.0, trap_freq=50.0, seed=42
+        )
+
+        assert result.n_shots == 10
+        assert 0 <= result.mean_fidelity <= 1

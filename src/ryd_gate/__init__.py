@@ -12,13 +12,15 @@ except ImportError:
     jax_atom_Evolution = None
 
 try:
-    from .ideal_cz import CZGateSimulator
+    from .ideal_cz import CZGateSimulator, MonteCarloResult
 except ImportError:
     CZGateSimulator = None
+    MonteCarloResult = None
 
 __all__ = [
     "jax_atom_Evolution",
     "CZGateSimulator",
+    "MonteCarloResult",
     "blackman_pulse",
     "blackman_pulse_sqrt",
     "blackman_window",

@@ -15,6 +15,7 @@ For full density matrix simulations with decay channels, use `full_error_model.p
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import matplotlib.pyplot as plt
@@ -23,12 +24,52 @@ from arc import Rubidium87
 from arc.wigner import CG
 from qutip import Bloch
 from scipy import integrate, interpolate
+from scipy.constants import k as kB
 from scipy.optimize import minimize
 
 from ryd_gate.blackman import blackman_pulse
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
+
+
+# ==================================================================
+# MONTE CARLO RESULT DATA CLASS
+# ==================================================================
+
+
+@dataclass
+class MonteCarloResult:
+    """Results from a Monte Carlo simulation.
+
+    Attributes
+    ----------
+    mean_fidelity : float
+        Average gate fidelity over all shots.
+    std_fidelity : float
+        Standard deviation of gate fidelity.
+    mean_infidelity : float
+        Average gate infidelity (1 - fidelity) over all shots.
+    std_infidelity : float
+        Standard deviation of gate infidelity.
+    n_shots : int
+        Number of Monte Carlo shots performed.
+    fidelities : NDArray[np.floating]
+        Array of individual fidelities for each shot.
+    detuning_samples : NDArray[np.floating] | None
+        Sampled detuning errors (rad/s) if T2* dephasing was enabled.
+    distance_samples : NDArray[np.floating] | None
+        Sampled interatomic distances (μm) if position fluctuations were enabled.
+    """
+
+    mean_fidelity: float
+    std_fidelity: float
+    mean_infidelity: float
+    std_infidelity: float
+    n_shots: int
+    fidelities: "NDArray[np.floating]"
+    detuning_samples: "NDArray[np.floating] | None" = None
+    distance_samples: "NDArray[np.floating] | None" = None
 
 
 # ==================================================================
@@ -386,6 +427,409 @@ class CZGateSimulator:
         else:
             print("Bloch sphere plot is only implemented for the 'TO' strategy.")
             return
+
+    # ==================================================================
+    # MONTE CARLO SIMULATION
+    # ==================================================================
+
+    def run_monte_carlo_simulation(
+        self,
+        x: list[float],
+        n_shots: int = 1000,
+        T2_star: float | None = 3e-6,
+        temperature: float | None = None,
+        trap_freq: float | None = None,
+        sigma_pos: float | None = None,
+        seed: int | None = None,
+    ) -> MonteCarloResult:
+        """Run quasi-static Monte Carlo simulation for error budget analysis.
+
+        Simulates physical error mechanisms via statistical averaging over many
+        shots, following the methodology from arXiv:2305.03406 (Lukin group).
+
+        This implements two key error sources:
+        1. **Doppler Dephasing (T2*)**: Gaussian-distributed detuning noise from
+           ground-Rydberg coherence limitations due to Doppler shifts and laser
+           phase noise.
+        2. **Interaction Fluctuations**: Position spread from finite atomic
+           temperature causes shot-to-shot variations in V_Ryd = C_6/R^6.
+
+        Parameters
+        ----------
+        x : list of float
+            Pulse parameters (format depends on strategy).
+        n_shots : int, default=1000
+            Number of Monte Carlo shots to perform.
+        T2_star : float or None, default=3e-6
+            Ground-Rydberg coherence time in seconds. Set to None to disable
+            Doppler dephasing. The default 3 μs matches the paper.
+            Detuning noise σ_δ ≈ √2/T2* (Gaussian decay profile).
+        temperature : float or None, default=None
+            Atomic temperature in μK. Set to None to disable position
+            fluctuations. Typical experimental value is 10-20 μK.
+        trap_freq : float or None, default=None
+            Trap frequency in kHz. Required if temperature is specified and
+            sigma_pos is not directly provided.
+        sigma_pos : float or None, default=None
+            Position spread standard deviation in μm. If provided, overrides
+            the calculation from temperature and trap_freq.
+        seed : int or None, default=None
+            Random seed for reproducibility.
+
+        Returns
+        -------
+        MonteCarloResult
+            Dataclass containing:
+            - mean_fidelity: Average gate fidelity
+            - std_fidelity: Standard deviation of fidelity
+            - mean_infidelity: Average gate infidelity (1 - F)
+            - std_infidelity: Standard deviation of infidelity
+            - n_shots: Number of shots performed
+            - fidelities: Array of individual fidelities
+            - detuning_samples: Sampled detuning errors (if T2* enabled)
+            - distance_samples: Sampled distances (if position enabled)
+
+        Notes
+        -----
+        **Doppler Dephasing Model**:
+        Assumes a Gaussian decay profile exp(-(t/T2*)²) for the coherence,
+        which corresponds to Gaussian-distributed detuning noise with
+        σ_δ = √2 / T2* (in rad/s). For each shot, a random detuning
+        δ_err ~ N(0, σ_δ²) is added to the Rydberg state diagonal elements.
+
+        **Position Fluctuation Model**:
+        Atoms in a harmonic trap at temperature T have position spread
+        σ_pos = √(k_B T / (m ω²)). For each shot, independent displacements
+        δr_1, δr_2 ~ N(0, σ_pos²) are sampled, and the effective distance
+        R_new = R_0 + δr_1 - δr_2 is used to compute V_Ryd = C_6/R_new^6.
+
+        **Efficiency**:
+        The base Hamiltonian is reused; only shot-specific perturbations
+        (detuning and interaction strength) are recomputed per shot.
+
+        Examples
+        --------
+        Run with T2* dephasing only:
+
+        >>> sim = CZGateSimulator(decayflag=False, strategy='TO')
+        >>> result = sim.run_monte_carlo_simulation(x_opt, n_shots=500, T2_star=3e-6)
+        >>> print(f"Mean fidelity: {result.mean_fidelity:.6f} ± {result.std_fidelity:.6f}")
+
+        Run with both error sources:
+
+        >>> result = sim.run_monte_carlo_simulation(
+        ...     x_opt, n_shots=1000, T2_star=3e-6, temperature=15.0, trap_freq=50.0
+        ... )
+
+        Disable T2* to isolate position fluctuation contribution:
+
+        >>> result = sim.run_monte_carlo_simulation(
+        ...     x_opt, n_shots=1000, T2_star=None, temperature=15.0, trap_freq=50.0
+        ... )
+        """
+        # Validate inputs
+        if temperature is not None and trap_freq is None and sigma_pos is None:
+            raise ValueError(
+                "Either trap_freq or sigma_pos must be provided when temperature is set."
+            )
+
+        # Initialize RNG
+        rng = np.random.default_rng(seed)
+
+        # Compute noise parameters
+        sigma_delta = self._compute_detuning_sigma(T2_star) if T2_star else None
+        sigma_position = self._compute_position_sigma(temperature, trap_freq, sigma_pos)
+
+        # Store original Hamiltonian
+        original_ham_const = self.tq_ham_const.copy()
+        original_v_ryd = self.v_ryd
+
+        # Pre-compute Rydberg interaction operator for efficient updates
+        ham_vdw_unit = self._build_vdw_unit_operator()
+
+        # Storage for results
+        fidelities = np.zeros(n_shots)
+        detuning_samples = np.zeros(n_shots) if sigma_delta else None
+        distance_samples = np.zeros(n_shots) if sigma_position else None
+
+        # Run Monte Carlo loop
+        for shot in range(n_shots):
+            # Reset Hamiltonian to original
+            self.tq_ham_const = original_ham_const.copy()
+            self.v_ryd = original_v_ryd
+
+            # Apply T2* dephasing (detuning noise)
+            if sigma_delta is not None:
+                delta_err = rng.normal(0, sigma_delta)
+                detuning_samples[shot] = delta_err
+                self._apply_detuning_perturbation(delta_err)
+
+            # Apply position fluctuations
+            if sigma_position is not None:
+                delta_r1 = rng.normal(0, sigma_position)
+                delta_r2 = rng.normal(0, sigma_position)
+                d_new = self._get_nominal_distance() + delta_r1 - delta_r2
+                # Clamp to avoid pathological cases
+                d_new = max(d_new, 0.1)
+                distance_samples[shot] = d_new
+                self._apply_interaction_perturbation(d_new, ham_vdw_unit)
+
+            # Compute fidelity for this shot
+            infidelity = self.avg_fidelity(x)
+            fidelities[shot] = 1.0 - infidelity
+
+        # Restore original state
+        self.tq_ham_const = original_ham_const
+        self.v_ryd = original_v_ryd
+
+        # Compute statistics
+        mean_fid = float(np.mean(fidelities))
+        std_fid = float(np.std(fidelities))
+        infidelities = 1.0 - fidelities
+
+        return MonteCarloResult(
+            mean_fidelity=mean_fid,
+            std_fidelity=std_fid,
+            mean_infidelity=float(np.mean(infidelities)),
+            std_infidelity=float(np.std(infidelities)),
+            n_shots=n_shots,
+            fidelities=fidelities,
+            detuning_samples=detuning_samples,
+            distance_samples=distance_samples,
+        )
+
+    def _compute_detuning_sigma(self, T2_star: float) -> float:
+        """Compute detuning noise standard deviation from T2* coherence time.
+
+        For a Gaussian decay profile exp(-(t/T2*)²), the corresponding
+        detuning noise has σ_δ = √2 / T2* in rad/s.
+
+        Parameters
+        ----------
+        T2_star : float
+            Coherence time in seconds.
+
+        Returns
+        -------
+        float
+            Detuning standard deviation in rad/s.
+        """
+        return np.sqrt(2) / T2_star
+
+    def _compute_position_sigma(
+        self,
+        temperature: float | None,
+        trap_freq: float | None,
+        sigma_pos: float | None,
+    ) -> float | None:
+        """Compute position spread from thermal parameters.
+
+        Parameters
+        ----------
+        temperature : float or None
+            Atomic temperature in μK.
+        trap_freq : float or None
+            Trap frequency in kHz.
+        sigma_pos : float or None
+            Direct position spread in μm (overrides calculation).
+
+        Returns
+        -------
+        float or None
+            Position standard deviation in μm, or None if disabled.
+        """
+        if sigma_pos is not None:
+            return sigma_pos
+        if temperature is None:
+            return None
+        if trap_freq is None or trap_freq <= 0:
+            raise ValueError("trap_freq must be positive when temperature is specified.")
+
+        # Convert units
+        T_K = temperature * 1e-6  # μK to K
+        omega = 2 * np.pi * trap_freq * 1e3  # kHz to rad/s
+        m_Rb = 87 * 1.66054e-27  # 87Rb mass in kg
+
+        # σ_pos = sqrt(k_B T / (m ω²))
+        sigma_m = np.sqrt(kB * T_K / (m_Rb * omega**2))
+        return sigma_m * 1e6  # Convert to μm
+
+    def _get_nominal_distance(self) -> float:
+        """Get the nominal interatomic distance in μm.
+
+        Returns
+        -------
+        float
+            Interatomic distance in μm.
+        """
+        # For 'our' param_set, d=3μm is implicit in v_ryd calculation
+        # v_ryd = 2π × 874e9 / 3^6
+        # We need to extract d from C_6 / v_ryd
+        if self.param_set == "our":
+            return 3.0  # μm
+        elif self.param_set == "lukin":
+            # v_ryd = 2π × 450e6 for lukin
+            # From paper, typical distance is ~4-5 μm
+            # C_6 for n=53 is smaller, let's compute from v_ryd
+            # Assume C_6 = 2π × 50e9 μm^6 for n=53 (approximate)
+            return 3.0  # Approximate, adjust as needed
+        return 3.0
+
+    def _build_vdw_unit_operator(self) -> NDArray[np.complexfloating]:
+        """Build the unit van der Waals interaction operator.
+
+        Returns the operator that, when multiplied by V_ryd, gives the
+        Rydberg-Rydberg interaction Hamiltonian.
+
+        Returns
+        -------
+        ndarray
+            Unit vdW operator of shape (49, 49).
+        """
+        ham_vdw_mat = np.zeros((7, 7))
+        ham_vdw_mat_garb = np.zeros((7, 7))
+        ham_vdw_mat[5][5] = 1
+        ham_vdw_mat_garb[6][6] = 1
+        return np.kron(
+            ham_vdw_mat + ham_vdw_mat_garb, ham_vdw_mat + ham_vdw_mat_garb
+        )
+
+    def _apply_detuning_perturbation(self, delta_err: float) -> None:
+        """Apply detuning perturbation to Rydberg states.
+
+        Adds delta_err to the diagonal elements of the Hamiltonian
+        corresponding to Rydberg states (indices 5 and 6 in single-atom basis).
+
+        Parameters
+        ----------
+        delta_err : float
+            Detuning error in rad/s.
+        """
+        # Build single-atom perturbation
+        perturbation_sq = np.zeros((7, 7), dtype=np.complex128)
+        perturbation_sq[5, 5] = delta_err  # |r⟩
+        perturbation_sq[6, 6] = delta_err  # |r'⟩
+
+        # Extend to two-atom space
+        perturbation_tq = np.kron(np.eye(7), perturbation_sq) + np.kron(
+            perturbation_sq, np.eye(7)
+        )
+
+        # Apply to Hamiltonian
+        self.tq_ham_const = self.tq_ham_const + perturbation_tq
+
+    def _apply_interaction_perturbation(
+        self, d_new: float, ham_vdw_unit: NDArray[np.complexfloating]
+    ) -> None:
+        """Apply interaction strength perturbation from distance change.
+
+        Updates the Rydberg-Rydberg interaction based on the new distance.
+
+        Parameters
+        ----------
+        d_new : float
+            New interatomic distance in μm.
+        ham_vdw_unit : ndarray
+            Unit van der Waals operator.
+        """
+        # Compute C_6 coefficient from original v_ryd and nominal distance
+        d_nominal = self._get_nominal_distance()
+        C_6 = self.v_ryd * d_nominal**6
+
+        # Compute new v_ryd
+        v_ryd_new = C_6 / d_new**6
+
+        # Compute change in interaction
+        delta_v = v_ryd_new - self.v_ryd
+
+        # Apply perturbation
+        self.tq_ham_const = self.tq_ham_const + delta_v * ham_vdw_unit
+        self.v_ryd = v_ryd_new
+
+    def get_error_budget(
+        self,
+        x: list[float],
+        n_shots: int = 1000,
+        T2_star: float = 3e-6,
+        temperature: float = 15.0,
+        trap_freq: float = 50.0,
+        seed: int | None = None,
+    ) -> dict[str, float]:
+        """Compute error budget breakdown for the CZ gate.
+
+        Runs separate Monte Carlo simulations to isolate contributions
+        from different error sources, similar to Extended Data Fig. 4
+        from arXiv:2305.03406.
+
+        Parameters
+        ----------
+        x : list of float
+            Pulse parameters.
+        n_shots : int, default=1000
+            Number of Monte Carlo shots per error source.
+        T2_star : float, default=3e-6
+            Ground-Rydberg coherence time in seconds.
+        temperature : float, default=15.0
+            Atomic temperature in μK.
+        trap_freq : float, default=50.0
+            Trap frequency in kHz.
+        seed : int or None, default=None
+            Random seed for reproducibility.
+
+        Returns
+        -------
+        dict
+            Error budget with keys:
+            - 'ideal_infidelity': Infidelity without noise
+            - 'T2_star_infidelity': Infidelity with only T2* dephasing
+            - 'position_infidelity': Infidelity with only position fluctuations
+            - 'total_infidelity': Infidelity with both error sources
+            - 'T2_star_contribution': Isolated T2* contribution
+            - 'position_contribution': Isolated position contribution
+        """
+        # Ideal (no noise)
+        ideal_infidelity = self.avg_fidelity(x)
+
+        # T2* only
+        result_t2 = self.run_monte_carlo_simulation(
+            x,
+            n_shots=n_shots,
+            T2_star=T2_star,
+            temperature=None,
+            seed=seed,
+        )
+
+        # Position fluctuations only
+        result_pos = self.run_monte_carlo_simulation(
+            x,
+            n_shots=n_shots,
+            T2_star=None,
+            temperature=temperature,
+            trap_freq=trap_freq,
+            seed=seed + 1 if seed else None,
+        )
+
+        # Both error sources
+        result_both = self.run_monte_carlo_simulation(
+            x,
+            n_shots=n_shots,
+            T2_star=T2_star,
+            temperature=temperature,
+            trap_freq=trap_freq,
+            seed=seed + 2 if seed else None,
+        )
+
+        return {
+            "ideal_infidelity": ideal_infidelity,
+            "T2_star_infidelity": result_t2.mean_infidelity,
+            "T2_star_std": result_t2.std_infidelity,
+            "position_infidelity": result_pos.mean_infidelity,
+            "position_std": result_pos.std_infidelity,
+            "total_infidelity": result_both.mean_infidelity,
+            "total_std": result_both.std_infidelity,
+            "T2_star_contribution": result_t2.mean_infidelity - ideal_infidelity,
+            "position_contribution": result_pos.mean_infidelity - ideal_infidelity,
+        }
 
     # ==================================================================
     # HAMILTONIAN CONSTRUCTION
