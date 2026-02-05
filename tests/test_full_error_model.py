@@ -690,3 +690,263 @@ class TestCZFidelityWithLeakage:
         
         # Should be very close (only numerical differences)
         assert fid_with_leak == pytest.approx(fid_standard, abs=1e-4)
+
+
+class TestThermalEffects:
+    """Tests for Monte Carlo thermal Doppler effect methods."""
+
+    @pytest.fixture(scope="class")
+    def model(self):
+        return jax_atom_Evolution()
+
+    def test_velocity_thermal_sample_distribution(self, model):
+        """Sampled velocities should have mean ~0 and correct std."""
+        from scipy.constants import k as kB
+        T_atom = 10.0  # μK
+        T_K = T_atom * 1e-6
+        m_Rb = model.atom.mass * 1e-3
+        expected_std = np.sqrt(kB * T_K / m_Rb)
+
+        rng = np.random.default_rng(42)
+        samples = [model.velocity_thermal_sample(T_atom, rng=rng) for _ in range(5000)]
+        assert np.abs(np.mean(samples)) < 3 * expected_std / np.sqrt(5000)
+        assert np.std(samples) == pytest.approx(expected_std, rel=0.1)
+
+    def test_doppler_shift_returns_float(self, model):
+        result = model.doppler_shift(10.0)
+        assert isinstance(result, float)
+
+    def test_doppler_std_scales_with_temperature(self, model):
+        """Higher temperature should give larger Doppler std."""
+        assert model.doppler_std(20.0) > model.doppler_std(5.0)
+
+    def test_doppler_std_zero_at_zero_temp(self, model):
+        assert model.doppler_std(0.0) == pytest.approx(0.0, abs=1e-15)
+
+    def test_doppler_std_reasonable_value(self, model):
+        """At 10 μK the Doppler std should be in the kHz–MHz range."""
+        std = model.doppler_std(10.0)
+        # Should be roughly 0.01–10 MHz
+        assert 1e-3 < std < 100
+
+    @pytest.mark.slow
+    def test_simulate_thermal_returns_dict(self, model):
+        """simulate_with_thermal_effects should return expected keys."""
+        amp_420 = lambda t: 1.0
+        phase_420 = lambda t: 0.0
+        amp_1013 = lambda t: 1.0
+        tlist = jnp.linspace(0, 0.01, 5)
+
+        result = model.simulate_with_thermal_effects(
+            tlist, amp_420, phase_420, amp_1013, T_atom=10.0, n_samples=2, seed=0
+        )
+        assert set(result.keys()) == {'mean_fidelity', 'std_fidelity',
+                                       'fidelity_list', 'doppler_shifts'}
+        assert len(result['fidelity_list']) == 2
+        assert len(result['doppler_shifts']) == 2
+
+    @pytest.mark.slow
+    def test_simulate_thermal_fidelity_bounded(self, model):
+        """All fidelities should be in [0, 1]."""
+        amp_420 = lambda t: 1.0
+        phase_420 = lambda t: 0.0
+        amp_1013 = lambda t: 1.0
+        tlist = jnp.linspace(0, 0.01, 5)
+
+        result = model.simulate_with_thermal_effects(
+            tlist, amp_420, phase_420, amp_1013, T_atom=10.0, n_samples=3, seed=1
+        )
+        for f in result['fidelity_list']:
+            assert -1e-9 <= f <= 1 + 1e-9
+
+    @pytest.mark.slow
+    def test_simulate_thermal_zero_temp_matches_standard(self, model):
+        """At T=0 the thermal simulation should match a standard run."""
+        amp_420 = lambda t: 1.0
+        phase_420 = lambda t: 0.0
+        amp_1013 = lambda t: 1.0
+        tlist = jnp.linspace(0, 0.01, 5)
+
+        result = model.simulate_with_thermal_effects(
+            tlist, amp_420, phase_420, amp_1013, T_atom=0.0, n_samples=1, seed=0
+        )
+        sol = model.integrate_rho_jax(tlist, amp_420, phase_420, amp_1013)
+        fid_standard, _ = model.CZ_fidelity(sol[-1])
+        assert result['mean_fidelity'] == pytest.approx(float(fid_standard), abs=1e-6)
+
+
+class TestPositionSpread:
+    """Tests for thermal position spread from harmonic trap."""
+
+    @pytest.fixture(scope="class")
+    def model(self):
+        return jax_atom_Evolution()
+
+    def test_position_thermal_sample_distribution(self, model):
+        """Sampled positions should have mean ~0 and correct std."""
+        from scipy.constants import k as kB
+        T_atom = 10.0  # μK
+        trap_freq = 100.0  # kHz
+        T_K = T_atom * 1e-6
+        m_Rb = model.atom.mass * 1e-3
+        omega = 2 * np.pi * trap_freq * 1e3
+        expected_std_um = np.sqrt(kB * T_K / (m_Rb * omega ** 2)) * 1e6
+
+        rng = np.random.default_rng(42)
+        samples = [model.position_thermal_sample(T_atom, trap_freq, rng=rng)
+                   for _ in range(5000)]
+        assert np.abs(np.mean(samples)) < 3 * expected_std_um / np.sqrt(5000)
+        assert np.std(samples) == pytest.approx(expected_std_um, rel=0.1)
+
+    def test_position_thermal_sample_zero_temp(self, model):
+        """At T=0, position sample should be 0."""
+        assert model.position_thermal_sample(0.0, 100.0) == 0.0
+
+    def test_position_thermal_sample_zero_freq(self, model):
+        """With zero trap frequency, position sample should be 0."""
+        assert model.position_thermal_sample(10.0, 0.0) == 0.0
+
+    def test_position_spread_std_scales_with_temperature(self, model):
+        """Higher temperature should give larger position spread."""
+        assert model.position_spread_std(20.0, 100.0) > model.position_spread_std(5.0, 100.0)
+
+    def test_position_spread_std_scales_with_trap_freq(self, model):
+        """Tighter trap should give smaller position spread."""
+        assert model.position_spread_std(10.0, 200.0) < model.position_spread_std(10.0, 50.0)
+
+    def test_position_spread_std_zero_at_zero_temp(self, model):
+        assert model.position_spread_std(0.0, 100.0) == pytest.approx(0.0, abs=1e-15)
+
+    def test_position_spread_std_reasonable_value(self, model):
+        """At 10 μK and 100 kHz trap, spread should be on the order of μm."""
+        std = model.position_spread_std(10.0, 100.0)
+        # Should be on the order of 0.1–10 μm
+        assert 0.01 < std < 10.0
+
+    @pytest.mark.slow
+    def test_simulate_thermal_with_position_spread(self, model):
+        """simulate_with_thermal_effects with trap_freq should return position_shifts."""
+        amp_420 = lambda t: 1.0
+        phase_420 = lambda t: 0.0
+        amp_1013 = lambda t: 1.0
+        tlist = jnp.linspace(0, 0.01, 5)
+
+        result = model.simulate_with_thermal_effects(
+            tlist, amp_420, phase_420, amp_1013,
+            T_atom=10.0, n_samples=2, seed=0, trap_freq=100.0
+        )
+        assert 'position_shifts' in result
+        assert len(result['position_shifts']) == 2
+        # Each entry is a (dx1, dx2) tuple
+        assert len(result['position_shifts'][0]) == 2
+
+    @pytest.mark.slow
+    def test_simulate_thermal_without_trap_freq_no_position_shifts(self, model):
+        """Without trap_freq, result should not contain position_shifts."""
+        amp_420 = lambda t: 1.0
+        phase_420 = lambda t: 0.0
+        amp_1013 = lambda t: 1.0
+        tlist = jnp.linspace(0, 0.01, 5)
+
+        result = model.simulate_with_thermal_effects(
+            tlist, amp_420, phase_420, amp_1013,
+            T_atom=10.0, n_samples=2, seed=0
+        )
+        assert 'position_shifts' not in result
+
+    @pytest.mark.slow
+    def test_simulate_thermal_position_restores_state(self, model):
+        """After simulation with position spread, model state should be restored."""
+        orig_V = model.V
+        orig_d = model.d
+
+        amp_420 = lambda t: 1.0
+        phase_420 = lambda t: 0.0
+        amp_1013 = lambda t: 1.0
+        tlist = jnp.linspace(0, 0.01, 5)
+
+        model.simulate_with_thermal_effects(
+            tlist, amp_420, phase_420, amp_1013,
+            T_atom=10.0, n_samples=2, seed=0, trap_freq=100.0
+        )
+        assert model.V == orig_V
+        assert model.d == orig_d
+
+
+class TestCZGateExtended:
+    """Extended CZ gate fidelity tests with all 12 SSS states."""
+
+    @pytest.fixture(scope="class")
+    def model(self):
+        return jax_atom_Evolution()
+
+    def test_ideal_cz_all_sss_fidelity(self, model):
+        """Ideal CZ applied to every SSS state should give fidelity 1."""
+        CZ = model.CZ_ideal()
+        for psi0 in model.SSS_initial_state_list:
+            rho0 = model.psi_to_rho(psi0)
+            rho_final = CZ @ rho0 @ jnp.conj(CZ).T
+            fid, _ = model.CZ_fidelity(rho_final, state_initial=psi0)
+            assert fid == pytest.approx(1.0, abs=1e-5)
+
+
+class TestHamiltonianProperties:
+    """Additional Hamiltonian property tests."""
+
+    @pytest.fixture(scope="class")
+    def model(self):
+        return jax_atom_Evolution()
+
+    def test_full_hamiltonian_hermitian_at_t0(self, model):
+        """Full time-dependent H at t=0 with real amplitudes should be Hermitian
+        (ignoring the non-Hermitian decay part in Hconst)."""
+        args = {
+            "amp_420": lambda t: 1.0,
+            "phase_420": lambda t: 0.0,
+            "amp_1013": lambda t: 1.0,
+        }
+        H = model.hamiltonian(0.0, args)
+        # The off-diagonal coupling part should be Hermitian
+        H_coupling = (model.H_420_tq + model.H_420_tq_conj +
+                      model.H_1013_tq_hermi)
+        np.testing.assert_allclose(H_coupling, jnp.conj(H_coupling).T, atol=1e-12)
+
+
+class TestDecayOperatorsExtended:
+    """Verify mid-state branching ratios sum to 1 for each intermediate state."""
+
+    @pytest.fixture(scope="class")
+    def model(self):
+        return jax_atom_Evolution()
+
+    @pytest.mark.parametrize("level", ["e1", "e2", "e3"])
+    def test_mid_branch_ratios_sum_to_one(self, model, level):
+        ratios = model.mid_branch_ratio(level)
+        assert sum(ratios) == pytest.approx(1.0, abs=0.01)
+
+
+class TestCustomInitialState:
+    """Test init_state0 method."""
+
+    @pytest.fixture(scope="class")
+    def model(self):
+        return jax_atom_Evolution()
+
+    def test_init_state0_updates_rho(self, model):
+        psi_00 = jnp.kron(model.state_0, model.state_0)
+        model.init_state0(psi_00)
+        expected_rho = psi_00 @ jnp.conj(psi_00).T
+        np.testing.assert_allclose(model.rho0, expected_rho, atol=1e-12)
+        # Reset to default
+        model.init_state0(jnp.kron(model.state_1, model.state_1))
+
+
+class TestDistanceParameter:
+    """Test that different distances produce different blockade strengths."""
+
+    def test_different_distances(self):
+        m1 = jax_atom_Evolution(distance=3)
+        m2 = jax_atom_Evolution(distance=5)
+        assert m1.V != m2.V
+        # Closer atoms should have stronger interaction
+        assert m1.V > m2.V

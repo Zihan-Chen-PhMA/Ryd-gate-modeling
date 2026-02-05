@@ -27,9 +27,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-cov",
     "ruff",
     "sphinx",
     "sphinx-rtd-theme",
+    "myst-parser",
 ]
 
 [tool.setuptools.packages.find]
