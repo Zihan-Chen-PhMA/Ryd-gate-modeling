@@ -285,7 +285,7 @@ def main():
 
     # Initialize simulator
     print("\nInitializing CZGateSimulator...")
-    sim = CZGateSimulator(decayflag=False, param_set='our', strategy='TO')
+    sim = CZGateSimulator(decayflag=False, param_set='our', strategy='TO', blackmanflag=False)
 
     # Check ideal fidelity with optimized parameters
     ideal_infidelity = sim.avg_fidelity(X_TO)

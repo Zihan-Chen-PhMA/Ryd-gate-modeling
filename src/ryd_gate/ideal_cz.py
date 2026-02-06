@@ -180,11 +180,13 @@ class CZGateSimulator:
         param_set: Literal["our", "lukin"] = "our",
         strategy: Literal["TO", "AR"] = "AR",
         blackmanflag: bool = True,
+        detuning_sign: int = 1,
     ) -> None:
         """Initialize the CZ gate simulator with specified parameters."""
         self.param_set = param_set
         self.strategy = strategy
         self.blackmanflag = blackmanflag
+        self.detuning_sign = detuning_sign
 
         if param_set == "our":
             self._init_our_params(decayflag)
@@ -212,10 +214,10 @@ class CZGateSimulator:
         # Rydberg level and laser parameters
         self.ryd_level = 70
         # Assumes rabi_420 = rabi_1013, effective Rabi = 7 MHz
-        self.Delta = 2 * np.pi * 9.1e9  # Intermediate detuning (rad/s)
+        self.Delta = self.detuning_sign * 2 * np.pi * 9.1e9  # Intermediate detuning (rad/s)
         self.rabi_420 = 2*np.pi*(491)*10**(6)
         self.rabi_1013 = 2*np.pi*(185)*10**(6)
-        self.rabi_eff = self.rabi_420*self.rabi_1013/(2*self.Delta) # Effective two-photon Rabi (rad/s)
+        self.rabi_eff = self.rabi_420*self.rabi_1013/(2*abs(self.Delta)) # Effective two-photon Rabi (rad/s)
         self.time_scale = 2 * np.pi / self.rabi_eff
 
         # Dipole matrix element ratios for off-resonant transitions
