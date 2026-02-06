@@ -30,7 +30,7 @@ from ryd_gate.ideal_cz import CZGateSimulator
 #     - T: Gate time
 # The protocol φ(t) = A·cos(ωt + φ₀) + δ·t with 
 X_TO = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
-X_TO_DARK = [-0.62147117, -1.35896076, 0.50668662, -1.70301326, 1.17118209, 1.22300837]
+X_TO_DARK = [-0.62169911, -1.3591053, 0.50639069, -1.70318155, 1.17181594, 1.22294773]
 N_SSS = 12
 
 
@@ -60,8 +60,8 @@ def build_sss_states():
     ]
 
 
-def compute_infidelity(sim, ini_state, theta, t_gate):
-    """Compute infidelity for a given initial state."""
+def compute_infidelity(sim, ini_state, x_params):
+    """Compute infidelity for a given initial state and parameter set."""
     s0 = np.array([1, 0, 0, 0, 0, 0, 0], dtype=complex)
     s1 = np.array([0, 1, 0, 0, 0, 0, 0], dtype=complex)
     state_00 = np.kron(s0, s0)
@@ -69,11 +69,14 @@ def compute_infidelity(sim, ini_state, theta, t_gate):
     state_10 = np.kron(s1, s0)
     state_11 = np.kron(s1, s1)
 
+    theta = x_params[4]
+    t_gate = x_params[5] * sim.time_scale
+
     res = sim._get_gate_result_TO(
-        phase_amp=X_TO[0],
-        omega=X_TO[1] * sim.rabi_eff,
-        phase_init=X_TO[2],
-        delta=X_TO[3] * sim.rabi_eff,
+        phase_amp=x_params[0],
+        omega=x_params[1] * sim.rabi_eff,
+        phase_init=x_params[2],
+        delta=x_params[3] * sim.rabi_eff,
         t_gate=t_gate,
         state_mat=ini_state,
     )[:, -1]
@@ -102,7 +105,11 @@ def analyze_detuning(detuning_sign, decayflag):
         - mid_pop_integrated: time-integrated intermediate population
         - infidelities: array of infidelities for each SSS state
         - avg_infidelity: average infidelity
+        - mid_pops: array of shape (12, 1000) with mid population evolution
+        - time_ns: time array in nanoseconds
     """
+    x_params = X_TO if detuning_sign == 1 else X_TO_DARK
+
     sim = CZGateSimulator(
         decayflag=decayflag,
         param_set='our',
@@ -111,27 +118,29 @@ def analyze_detuning(detuning_sign, decayflag):
         detuning_sign=detuning_sign,
     )
 
-    t_gate = X_TO[5] * sim.time_scale
-    theta = X_TO[4]
+    t_gate = x_params[5] * sim.time_scale
     dt = t_gate / 999  # Time step
+    time_ns = np.linspace(0, t_gate * 1e9, 1000)
 
     sss_states = build_sss_states()
     infidelities = np.zeros(N_SSS)
     mid_pop_peaks = np.zeros(N_SSS)
     mid_pop_integrated = np.zeros(N_SSS)
+    mid_pops = np.zeros((N_SSS, 1000))
 
     for i in range(N_SSS):
         print(f"    SSS-{i}...", end=" ", flush=True)
         # Get population evolution
-        result = sim._diagnose_run_TO(X_TO, f"SSS-{i}")
+        result = sim._diagnose_run_TO(x_params, f"SSS-{i}")
         mid_pop = result[0] / 2.0  # Normalize for two-atom system
 
+        mid_pops[i, :] = mid_pop
         mid_pop_peaks[i] = np.max(mid_pop)
         mid_pop_integrated[i] = np.trapezoid(mid_pop, dx=dt)
 
         # Calculate infidelity
         ini = sss_states[i]
-        infidelities[i] = compute_infidelity(sim, ini, theta, t_gate)
+        infidelities[i] = compute_infidelity(sim, ini, x_params)
         print("done", flush=True)
 
     return {
@@ -141,6 +150,8 @@ def analyze_detuning(detuning_sign, decayflag):
         'avg_infidelity': np.mean(infidelities),
         'mid_pop_peaks_all': mid_pop_peaks,
         'mid_pop_integrated_all': mid_pop_integrated,
+        'mid_pops': mid_pops,
+        'time_ns': time_ns,
     }
 
 
@@ -217,6 +228,72 @@ def plot_comparison(bright_nodecay, dark_nodecay, bright_decay, dark_decay):
     plt.close(fig)
 
 
+def plot_population_evolution(bright_data, dark_data):
+    """Plot intermediate state population vs gate time for bright and dark detuning.
+
+    Generates two figures:
+      - 3x4 grid comparing each SSS state
+      - SSS-averaged comparison
+    """
+    # ── Per-SSS-state 3×4 grid ──────────────────────────────────────────────
+    fig, axes = plt.subplots(3, 4, figsize=(18, 11))
+
+    for i, ax in enumerate(axes.flat):
+        ax.plot(bright_data['time_ns'], bright_data['mid_pops'][i],
+                color='tab:orange', lw=1.3, label='Bright (Δ>0)')
+        ax.plot(dark_data['time_ns'], dark_data['mid_pops'][i],
+                color='tab:blue', lw=1.3, label='Dark (Δ<0)')
+        ax.set_title(f'SSS-{i}', fontsize=10)
+        ax.set_xlabel('Time (ns)', fontsize=8)
+        ax.set_ylabel('Mid-state Pop.', fontsize=8)
+        ax.tick_params(labelsize=7)
+
+        ymax = max(np.max(bright_data['mid_pops'][i]),
+                   np.max(dark_data['mid_pops'][i]))
+        if ymax < 1e-6:
+            ymax = 0.01
+        ax.set_ylim(-0.02 * ymax, ymax * 1.15)
+
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], color='tab:orange', lw=1.5, label='Bright (Δ>0)'),
+        Line2D([0], [0], color='tab:blue', lw=1.5, label='Dark (Δ<0)'),
+    ]
+    fig.legend(handles=legend_elements, loc='lower center', ncol=2,
+               fontsize=10, bbox_to_anchor=(0.5, -0.03))
+    fig.suptitle('Intermediate State Population — Bright vs Dark Detuning',
+                 fontsize=14, y=1.01)
+    fig.tight_layout()
+    outpath = 'docs/figures/bright_dark_mid_population_per_sss.png'
+    fig.savefig(outpath, dpi=150, bbox_inches='tight')
+    print(f"  Saved {outpath}")
+    plt.close(fig)
+
+    # ── SSS-averaged comparison ─────────────────────────────────────────────
+    bright_avg = bright_data['mid_pops'].mean(axis=0)
+    dark_avg = dark_data['mid_pops'].mean(axis=0)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(bright_data['time_ns'], bright_avg,
+            color='tab:orange', lw=1.8, label='Bright (Δ>0)')
+    ax.plot(dark_data['time_ns'], dark_avg,
+            color='tab:blue', lw=1.8, label='Dark (Δ<0)')
+    ax.set_xlabel('Time (ns)', fontsize=12)
+    ax.set_ylabel('Intermediate State Population (SSS-averaged)', fontsize=12)
+    ax.set_title(
+        f'SSS-Averaged Intermediate Population — Bright vs Dark\n'
+        f'Bright avg infidelity: {bright_data["avg_infidelity"]:.2e}  |  '
+        f'Dark avg infidelity: {dark_data["avg_infidelity"]:.2e}',
+        fontsize=13,
+    )
+    ax.legend(fontsize=11)
+    fig.tight_layout()
+    outpath = 'docs/figures/bright_dark_mid_population_averaged.png'
+    fig.savefig(outpath, dpi=150, bbox_inches='tight')
+    print(f"  Saved {outpath}")
+    plt.close(fig)
+
+
 def main():
     os.makedirs('docs/figures', exist_ok=True)
 
@@ -247,8 +324,11 @@ def main():
     print(f"| Peak Mid Population         | {bright_nodecay['mid_pop_peak']:.4e} | {dark_nodecay['mid_pop_peak']:.4e} |")
     print(f"| Integrated Mid Pop (s)      | {bright_nodecay['mid_pop_integrated']:.4e} | {dark_nodecay['mid_pop_integrated']:.4e} |")
 
-    print("\n[5/5] Generating comparison plots...")
+    print("\n[5/6] Generating comparison bar plots...")
     plot_comparison(bright_nodecay, dark_nodecay, bright_decay, dark_decay)
+
+    print("[6/6] Generating population evolution plots...")
+    plot_population_evolution(bright_nodecay, dark_nodecay)
 
     print("\nDone.")
 
