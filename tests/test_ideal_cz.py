@@ -353,6 +353,106 @@ class TestDiagnosticMethods:
 
 
 # ==================================================================
+# TESTS FOR STORED-PARAMETER WORKFLOW
+# ==================================================================
+
+
+class TestStoredParameterWorkflow:
+    """Tests for the setup_protocol / stored-parameter API."""
+
+    def test_x_initial_default_none(self):
+        """x_initial should be None before setup_protocol is called."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        assert sim.x_initial is None
+
+    def test_setup_protocol_TO_stores_params(self):
+        """setup_protocol should store TO parameters as x_initial."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        sim.setup_protocol(x)
+        assert sim.x_initial == x
+
+    def test_setup_protocol_AR_stores_params(self):
+        """setup_protocol should store AR parameters as x_initial."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
+        sim.setup_protocol(x)
+        assert sim.x_initial == x
+
+    def test_setup_protocol_TO_wrong_length_raises(self):
+        """setup_protocol should raise ValueError for wrong TO parameter count."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        with pytest.raises(ValueError, match="6 elements"):
+            sim.setup_protocol([1, 2, 3])
+
+    def test_setup_protocol_AR_wrong_length_raises(self):
+        """setup_protocol should raise ValueError for wrong AR parameter count."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        with pytest.raises(ValueError, match="8 elements"):
+            sim.setup_protocol([1, 2, 3])
+
+    def test_avg_fidelity_no_params_raises(self):
+        """avg_fidelity() with no stored params should raise ValueError."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        with pytest.raises(ValueError, match="No pulse parameters"):
+            sim.avg_fidelity()
+
+    def test_avg_fidelity_uses_stored_params(self):
+        """avg_fidelity() should use stored params and match explicit call."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        sim.setup_protocol(x)
+        infid_explicit = sim.avg_fidelity(x)
+        infid_stored = sim.avg_fidelity()
+        assert infid_explicit == infid_stored
+
+    def test_diagnose_run_stored_params(self):
+        """diagnose_run with stored params should work via keyword arg."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        sim.setup_protocol(x)
+        result = sim.diagnose_run(initial_state="11")
+        assert len(result) == 3
+
+    def test_diagnose_run_AR_sss_states(self):
+        """diagnose_run with AR strategy should support SSS states."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
+        for i in range(12):
+            result = sim.diagnose_run(x, f"SSS-{i}")
+            assert len(result) == 3
+
+    def test_avg_fidelity_explicit_does_not_mutate(self):
+        """Passing explicit x to avg_fidelity should not change x_initial."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x_stored = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        x_other = [0.2, 0.5, 0.1, 0.1, 0.1, 0.8]
+        sim.setup_protocol(x_stored)
+        sim.avg_fidelity(x_other)
+        assert sim.x_initial == x_stored
+
+
+# ==================================================================
 # TESTS FOR PULSE OPTIMIZER MODULE (from original test file)
 # ==================================================================
 

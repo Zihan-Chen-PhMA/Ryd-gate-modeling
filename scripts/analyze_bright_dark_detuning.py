@@ -21,8 +21,16 @@ from ryd_gate.ideal_cz import CZGateSimulator
 
 
 # Optimized TO pulse parameters
+# Phase function: φ(t) = A·cos(ωt + φ₀) + δ·t
+#     - A = -0.64168872: Cosine amplitude (radians)
+#     - ω = 1.14372811: Modulation frequency
+#     - φ₀ =0.35715965: Initial phase
+#     - δ: Linear chirp rate
+#     - θ: Single-qubit Z rotation angle
+#     - T: Gate time
+# The protocol φ(t) = A·cos(ωt + φ₀) + δ·t with 
 X_TO = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
-
+X_TO_DARK = [-0.62147117, -1.35896076, 0.50668662, -1.70301326, 1.17118209, 1.22300837]
 N_SSS = 12
 
 

@@ -29,7 +29,7 @@ from ryd_gate.ideal_cz import CZGateSimulator
 #     - δ: Linear chirp rate
 #     - θ: Single-qubit Z rotation angle
 #     - T: Gate time
-# The protocol φ(t) = A·cos(ωt + φ₀) + δ·t with 
+# The protocol φ(t) = A·cos(ωt + φ₀) + δ·t with
 X_TO = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
 
 N_SSS = 12
@@ -38,75 +38,6 @@ N_SSS = 12
 CATEGORIES = ['Intermediate', 'Rydberg |r1⟩', 'Garbage Rydberg |r2⟩']
 COLORS = {'Intermediate': 'tab:blue', 'Rydberg |r1⟩': 'tab:red',
            'Garbage Rydberg |r2⟩': 'gray'}
-
-
-def build_sss_states():
-    """Build the 12 SSS initial states in the 49-dim Hilbert space."""
-    s0 = np.array([1, 0, 0, 0, 0, 0, 0], dtype=complex)
-    s1 = np.array([0, 1, 0, 0, 0, 0, 0], dtype=complex)
-
-    state_00 = np.kron(s0, s0)
-    state_01 = np.kron(s0, s1)
-    state_10 = np.kron(s1, s0)
-    state_11 = np.kron(s1, s1)
-
-    return [
-        0.5*state_00 + 0.5*state_01 + 0.5*state_10 + 0.5*state_11,
-        0.5*state_00 - 0.5*state_01 - 0.5*state_10 + 0.5*state_11,
-        0.5*state_00 + 0.5j*state_01 + 0.5j*state_10 - 0.5*state_11,
-        0.5*state_00 - 0.5j*state_01 - 0.5j*state_10 - 0.5*state_11,
-        state_00,
-        state_11,
-        0.5*state_00 + 0.5*state_01 + 0.5*state_10 - 0.5*state_11,
-        0.5*state_00 - 0.5*state_01 - 0.5*state_10 - 0.5*state_11,
-        0.5*state_00 + 0.5j*state_01 + 0.5j*state_10 + 0.5*state_11,
-        0.5*state_00 - 0.5j*state_01 - 0.5j*state_10 + 0.5*state_11,
-        state_00/np.sqrt(2) + 1j*state_11/np.sqrt(2),
-        state_00/np.sqrt(2) - 1j*state_11/np.sqrt(2),
-    ]
-
-
-def compute_infidelity(sim, ini_state, theta, t_gate):
-    """Compute infidelity for a given initial state.
-
-    The ideal CZ gate with local Rz corrections transforms:
-      |00⟩ → |00⟩
-      |01⟩ → exp(+i*θ) |01⟩
-      |10⟩ → exp(+i*θ) |10⟩
-      |11⟩ → exp(+i*(2θ+π)) |11⟩ = -exp(+2i*θ) |11⟩
-    """
-    s0 = np.array([1, 0, 0, 0, 0, 0, 0], dtype=complex)
-    s1 = np.array([0, 1, 0, 0, 0, 0, 0], dtype=complex)
-    state_00 = np.kron(s0, s0)
-    state_01 = np.kron(s0, s1)
-    state_10 = np.kron(s1, s0)
-    state_11 = np.kron(s1, s1)
-
-    # Get actual final state
-    res = sim._get_gate_result_TO(
-        phase_amp=X_TO[0],
-        omega=X_TO[1] * sim.rabi_eff,
-        phase_init=X_TO[2],
-        delta=X_TO[3] * sim.rabi_eff,
-        t_gate=t_gate,
-        state_mat=ini_state,
-    )[:, -1]
-
-    # Build ideal final state: (Rz⊗Rz) · CZ · |ψ₀⟩
-    # Decompose initial state into computational basis
-    c00 = np.vdot(state_00, ini_state)
-    c01 = np.vdot(state_01, ini_state)
-    c10 = np.vdot(state_10, ini_state)
-    c11 = np.vdot(state_11, ini_state)
-
-    # Apply CZ (flips sign of |11⟩) then Rz⊗Rz
-    psi_ideal = (c00 * state_00 +
-                 c01 * np.exp(+1j * theta) * state_01 +
-                 c10 * np.exp(+1j * theta) * state_10 +
-                 c11 * np.exp(+1j * (2*theta + np.pi)) * state_11)
-
-    fid = np.abs(np.vdot(res, psi_ideal)) ** 2
-    return 1.0 - fid
 
 
 def run_schrodinger():
@@ -122,26 +53,24 @@ def run_schrodinger():
     """
     sim = CZGateSimulator(decayflag=False, param_set='our', strategy='TO',
                           blackmanflag=False)
+    sim.setup_protocol(X_TO)
 
     t_gate = X_TO[5] * sim.time_scale
     time_ns = np.linspace(0, t_gate * 1e9, 1000)
-    theta = X_TO[4]
 
     pops = np.zeros((N_SSS, 3, 1000))
     infidelities = np.zeros(N_SSS)
 
-    sss_states = build_sss_states()
-
     for i in range(N_SSS):
+        label = f"SSS-{i}"
         # Get population evolution
-        result = sim._diagnose_run_TO(X_TO, f"SSS-{i}")
+        result = sim.diagnose_run(initial_state=label)
         pops[i, 0, :] = result[0] / 2.0
         pops[i, 1, :] = result[1] / 2.0
         pops[i, 2, :] = result[2] / 2.0
 
         # Calculate infidelity
-        ini = sss_states[i]
-        infidelities[i] = compute_infidelity(sim, ini, theta, t_gate)
+        infidelities[i] = sim.state_infidelity(label)
 
     return pops, time_ns, infidelities
 

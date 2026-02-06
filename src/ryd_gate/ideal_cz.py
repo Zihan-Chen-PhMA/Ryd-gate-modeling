@@ -30,6 +30,13 @@ from ryd_gate.blackman import blackman_pulse
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
+# Supported initial state labels for diagnostic methods
+InitialStateLabel = Literal[
+    "00", "01", "10", "11",
+    "SSS-0", "SSS-1", "SSS-2", "SSS-3", "SSS-4", "SSS-5",
+    "SSS-6", "SSS-7", "SSS-8", "SSS-9", "SSS-10", "SSS-11",
+]
+
 
 # ==================================================================
 # CZ GATE SIMULATOR CLASS
@@ -161,7 +168,7 @@ class CZGateSimulator:
         self.strategy = strategy
         self.blackmanflag = blackmanflag
         self.detuning_sign = detuning_sign
-
+        self.x_initial: list[float] | None = None
         if param_set == "our":
             self._init_our_params(decayflag)
         elif param_set == "lukin":
@@ -285,11 +292,112 @@ class CZGateSimulator:
         self.tq_ham_1013_conj = self._tq_ham_1013_lukin().conj().T
         self.t_rise = 20e-9  # Blackman pulse rise time
 
+    def _setup_protocol_TO(self, x: list[float]) -> None:
+        """Setup the protocol for the TO strategy.
+
+        Parameters
+        ----------
+        x : list of float
+            TO parameters [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale].
+        Usage:
+        # self.phase_amp = x[0]
+        # self.omega = x[1] * self.rabi_eff
+        # self.phase_init = x[2]
+        # self.delta = x[3] * self.rabi_eff
+        # self.theta = x[4]
+        # self.t_gate = x[5] * self.time_scale
+        """
+        if len(x) != 6:
+            raise ValueError(
+                f"TO parameters must be a list of 6 elements. Got {len(x)} elements."
+            )
+        self.x_initial = x
+        print(f"TO parameters is set to: [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale] = {x}")
+
+    def _setup_protocol_AR(self, x: list[float]) -> None:
+        """Setup the protocol for the AR strategy.
+
+        Parameters
+        ----------
+        x : list of float
+            AR parameters [ω/Ω_eff, A₁, φ₁, A₂, φ₂, δ/Ω_eff, T/T_scale, θ].
+        """
+        if len(x) != 8:
+            raise ValueError(
+                f"AR parameters must be a list of 8 elements. Got {len(x)} elements."
+            )
+        self.x_initial = x
+        print(f"AR parameters is set to: [ω/Ω_eff, A₁, φ₁, A₂, φ₂, δ/Ω_eff, T/T_scale, θ] = {x}")
+
+    def _setup_protocol(self, x: list[float]) -> None:
+        """Dispatch to strategy-specific setup method.
+
+        Parameters
+        ----------
+        x : list of float
+            Pulse parameters (format depends on strategy).
+        """
+        if self.strategy == "TO":
+            self._setup_protocol_TO(x)
+        elif self.strategy == "AR":
+            self._setup_protocol_AR(x)
+        else:
+            raise ValueError(
+                f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
+            )
+
+    def _resolve_params(self, x: list[float] | None, caller: str = "") -> list[float]:
+        """Resolve pulse parameters: use explicit x if given, else fall back to stored.
+
+        Parameters
+        ----------
+        x : list of float or None
+            Explicit pulse parameters. If None, uses self.x_initial.
+        caller : str
+            Name of calling method (for error messages).
+
+        Returns
+        -------
+        list of float
+            Resolved parameters.
+
+        Raises
+        ------
+        ValueError
+            If both x and self.x_initial are None.
+        """
+        if x is not None:
+            return x
+        if self.x_initial is not None:
+            return self.x_initial
+        raise ValueError(
+            f"No pulse parameters available{' in ' + caller if caller else ''}. "
+            "Call setup_protocol(x) first or pass x explicitly."
+        )
+
     # ==================================================================
     # PUBLIC API
     # ==================================================================
 
-    def optimize(self, x_initial: list[float]) -> object:
+    def setup_protocol(self, x: list[float]) -> None:
+        """Store pulse parameters for subsequent method calls.
+
+        This enables a workflow where parameters are set once and reused::
+
+            sim.setup_protocol(x0)
+            sim.optimize()        # uses stored x0 as initial guess
+            sim.avg_fidelity()    # uses stored (optimized) params
+
+        Parameters
+        ----------
+        x : list of float
+            Pulse parameters. Format depends on strategy:
+            - TO: [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale] (6 params)
+            - AR: [ω/Ω_eff, A₁, φ₁, A₂, φ₂, δ/Ω_eff, T/T_scale, θ] (8 params)
+        """
+        self._setup_protocol(x)
+
+    def optimize(self, x_initial = None) -> object:
         """Run pulse parameter optimization for the configured strategy.
 
         Parameters
@@ -314,13 +422,14 @@ class CZGateSimulator:
                 f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
             )
 
-    def avg_fidelity(self, x: list[float]) -> float:
+    def avg_fidelity(self, x: list[float] | None = None) -> float:
         """Calculate average gate infidelity for given pulse parameters.
 
         Parameters
         ----------
-        x : list of float
+        x : list of float, optional
             Pulse parameters (format depends on strategy).
+            If None, uses parameters stored via setup_protocol().
 
         Returns
         -------
@@ -328,6 +437,7 @@ class CZGateSimulator:
             Average gate infidelity (1 - F), where F is the fidelity.
             Value is bounded between 0 and 1.
         """
+        x = self._resolve_params(x, "avg_fidelity")
         if self.strategy == "TO":
             return self._avg_fidelity_TO(x)
         elif self.strategy == "AR":
@@ -338,7 +448,9 @@ class CZGateSimulator:
             )
 
     def diagnose_plot(
-        self, x: list[float], initial_state: Literal["00", "01", "10", "11"]
+        self,
+        x: list[float] | None = None,
+        initial_state: InitialStateLabel | None = None,
     ) -> None:
         """Generate population evolution plot for diagnostic analysis.
 
@@ -347,11 +459,16 @@ class CZGateSimulator:
 
         Parameters
         ----------
-        x : list of float
+        x : list of float, optional
             Pulse parameters (format depends on strategy).
-        initial_state : {'00', '01', '10', '11'}
-            Two-qubit initial state label.
+            If None, uses parameters stored via setup_protocol().
+        initial_state : str
+            Two-qubit initial state label. Supports '00', '01', '10', '11'
+            and 'SSS-0' through 'SSS-11'.
         """
+        if initial_state is None:
+            raise ValueError("initial_state is required.")
+        x = self._resolve_params(x, "diagnose_plot")
         if self.strategy == "TO":
             return self._diagnose_plot_TO(x, initial_state)
         elif self.strategy == "AR":
@@ -362,22 +479,29 @@ class CZGateSimulator:
             )
 
     def diagnose_run(
-        self, x: list[float], initial_state: Literal["00", "01", "10", "11"]
+        self,
+        x: list[float] | None = None,
+        initial_state: InitialStateLabel | None = None,
     ) -> list[NDArray[np.floating]]:
         """Run diagnostic simulation and return population arrays.
 
         Parameters
         ----------
-        x : list of float
+        x : list of float, optional
             Pulse parameters (format depends on strategy).
-        initial_state : {'00', '01', '10', '11'}
-            Two-qubit initial state label.
+            If None, uses parameters stored via setup_protocol().
+        initial_state : str
+            Two-qubit initial state label. Supports '00', '01', '10', '11'
+            and 'SSS-0' through 'SSS-11'.
 
         Returns
         -------
         list of ndarray
             [mid_state_pop, ryd_state_pop, ryd_garb_pop] arrays of shape (1000,).
         """
+        if initial_state is None:
+            raise ValueError("initial_state is required.")
+        x = self._resolve_params(x, "diagnose_run")
         if self.strategy == "TO":
             return self._diagnose_run_TO(x, initial_state)
         elif self.strategy == "AR":
@@ -387,7 +511,7 @@ class CZGateSimulator:
                 f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
             )
 
-    def plot_bloch(self, x: list[float], save: bool = True) -> None:
+    def plot_bloch(self, x: list[float] | None = None, save: bool = True) -> None:
         """Generate Bloch sphere visualization for key transitions.
 
         Plots trajectories for |01⟩ → |0r⟩ and |11⟩ → |W⟩ transitions on
@@ -395,16 +519,141 @@ class CZGateSimulator:
 
         Parameters
         ----------
-        x : list of float
+        x : list of float, optional
             TO pulse parameters [A, ω, φ₀, δ, θ, T].
+            If None, uses parameters stored via setup_protocol().
         save : bool, default=True
             Whether to save plots as PNG files.
         """
+        x = self._resolve_params(x, "plot_bloch")
         if self.strategy == "TO":
             return self._plotBloch_TO(x, save)
         else:
             print("Bloch sphere plot is only implemented for the 'TO' strategy.")
             return
+
+    def state_infidelity(
+        self,
+        initial_state: InitialStateLabel | NDArray[np.complexfloating],
+        x: list[float] | None = None,
+    ) -> float:
+        """Compute state infidelity for a specific initial state.
+
+        Evolves the given initial state under the pulse protocol and compares
+        the result to the ideal CZ gate output (with local Rz corrections).
+
+        The ideal CZ gate with local Rz corrections transforms::
+
+            |00⟩ → |00⟩
+            |01⟩ → exp(+iθ) |01⟩
+            |10⟩ → exp(+iθ) |10⟩
+            |11⟩ → exp(+i(2θ+π)) |11⟩ = −exp(+2iθ) |11⟩
+
+        Parameters
+        ----------
+        initial_state : str or ndarray
+            Either a state label ('00', '01', '10', '11', 'SSS-0' through
+            'SSS-11') or a state vector of shape (49,).
+        x : list of float, optional
+            Pulse parameters (format depends on strategy).
+            If None, uses parameters stored via setup_protocol().
+
+        Returns
+        -------
+        float
+            State infidelity (1 - F), where F = |⟨ψ_ideal|ψ_actual⟩|².
+        """
+        x = self._resolve_params(x, "state_infidelity")
+
+        # Resolve initial state: string label → vector
+        if isinstance(initial_state, str):
+            sss_states = self._build_sss_state_map()
+            if initial_state not in sss_states:
+                raise ValueError(f"Unsupported initial state: '{initial_state}'")
+            ini_state = sss_states[initial_state]
+        else:
+            ini_state = np.asarray(initial_state, dtype=complex)
+
+        # Extract theta (single-qubit Z rotation angle)
+        if self.strategy == "TO":
+            theta = x[4]
+        elif self.strategy == "AR":
+            theta = x[-1]
+        else:
+            raise ValueError(
+                f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
+            )
+
+        # Computational basis states
+        s0 = np.array([1, 0, 0, 0, 0, 0, 0], dtype=complex)
+        s1 = np.array([0, 1, 0, 0, 0, 0, 0], dtype=complex)
+        state_00 = np.kron(s0, s0)
+        state_01 = np.kron(s0, s1)
+        state_10 = np.kron(s1, s0)
+        state_11 = np.kron(s1, s1)
+
+        # Evolve and take final state
+        res = self.get_gate_result(ini_state, x)[:, -1]
+
+        # Build ideal final state: (Rz⊗Rz) · CZ · |ψ₀⟩
+        c00 = np.vdot(state_00, ini_state)
+        c01 = np.vdot(state_01, ini_state)
+        c10 = np.vdot(state_10, ini_state)
+        c11 = np.vdot(state_11, ini_state)
+
+        psi_ideal = (c00 * state_00 +
+                     c01 * np.exp(+1j * theta) * state_01 +
+                     c10 * np.exp(+1j * theta) * state_10 +
+                     c11 * np.exp(+1j * (2*theta + np.pi)) * state_11)
+
+        fid = np.abs(np.vdot(res, psi_ideal)) ** 2
+        return 1.0 - fid
+
+    def get_gate_result(
+        self,
+        state_mat: NDArray[np.complexfloating],
+        x: list[float] | None = None,
+    ) -> NDArray[np.complexfloating]:
+        """Evolve a quantum state under the configured pulse protocol.
+
+        Parameters
+        ----------
+        state_mat : ndarray
+            Initial state vector of shape (49,).
+        x : list of float, optional
+            Pulse parameters (format depends on strategy).
+            If None, uses parameters stored via setup_protocol().
+
+        Returns
+        -------
+        ndarray
+            State evolution array of shape (49, 1000).
+        """
+        x = self._resolve_params(x, "get_gate_result")
+        if self.strategy == "TO":
+            return self._get_gate_result_TO(
+                phase_amp=x[0],
+                omega=x[1] * self.rabi_eff,
+                phase_init=x[2],
+                delta=x[3] * self.rabi_eff,
+                t_gate=x[5] * self.time_scale,
+                state_mat=state_mat,
+            )
+        elif self.strategy == "AR":
+            return self._get_gate_result_AR(
+                omega=x[0] * self.rabi_eff,
+                phase_amp1=x[1],
+                phase_init1=x[2],
+                phase_amp2=x[3],
+                phase_init2=x[4],
+                delta=x[5] * self.rabi_eff,
+                t_gate=x[6] * self.time_scale,
+                state_mat=state_mat,
+            )
+        else:
+            raise ValueError(
+                f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
+            )
 
     # ==================================================================
     # HAMILTONIAN CONSTRUCTION
@@ -650,6 +899,40 @@ class CZGateSimulator:
         )
         return np.array(result.y)
 
+    @staticmethod
+    def _build_sss_state_map() -> dict[str, NDArray[np.complexfloating]]:
+        """Build mapping from state labels to 49-dimensional state vectors.
+
+        Returns
+        -------
+        dict
+            Mapping from state label strings to complex state vectors of shape (49,).
+        """
+        s0 = np.array([1, 0, 0, 0, 0, 0, 0], dtype=complex)
+        s1 = np.array([0, 1, 0, 0, 0, 0, 0], dtype=complex)
+        state_00 = np.kron(s0, s0)
+        state_01 = np.kron(s0, s1)
+        state_10 = np.kron(s1, s0)
+        state_11 = np.kron(s1, s1)
+        return {
+            "00": state_00,
+            "01": state_01,
+            "10": state_10,
+            "11": state_11,
+            "SSS-0": 0.5*state_00 + 0.5*state_01 + 0.5*state_10 + 0.5*state_11,
+            "SSS-1": 0.5*state_00 - 0.5*state_01 - 0.5*state_10 + 0.5*state_11,
+            "SSS-2": 0.5*state_00 + 0.5j*state_01 + 0.5j*state_10 - 0.5*state_11,
+            "SSS-3": 0.5*state_00 - 0.5j*state_01 - 0.5j*state_10 - 0.5*state_11,
+            "SSS-4": state_00,
+            "SSS-5": state_11,
+            "SSS-6": 0.5*state_00 + 0.5*state_01 + 0.5*state_10 - 0.5*state_11,
+            "SSS-7": 0.5*state_00 - 0.5*state_01 - 0.5*state_10 - 0.5*state_11,
+            "SSS-8": 0.5*state_00 + 0.5j*state_01 + 0.5j*state_10 + 0.5*state_11,
+            "SSS-9": 0.5*state_00 - 0.5j*state_01 - 0.5j*state_10 + 0.5*state_11,
+            "SSS-10": state_00/np.sqrt(2) + 1j*state_11/np.sqrt(2),
+            "SSS-11": state_00/np.sqrt(2) - 1j*state_11/np.sqrt(2),
+        }
+
     # ==================================================================
     # TIME-OPTIMAL (TO) STRATEGY - INTERNAL
     # ==================================================================
@@ -781,26 +1064,34 @@ class CZGateSimulator:
         avg_F = (1 / 20) * (abs(1 + 2 * a01 + a11) ** 2 + 1 + 2 * abs(a01) ** 2 + abs(a11) ** 2)
         return 1 - avg_F
 
-    def _optimization_TO(self, x: list[float]) -> object:
+    def _optimization_TO(self, x: list[float] = None) -> object:
         """Run Nelder-Mead optimization for TO pulse parameters.
 
         Parameters
         ----------
         x : list of float
             Initial guess [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale].
+            If None, use default parameters.
 
         Returns
         -------
         scipy.optimize.OptimizeResult
             Optimization result.
         """
+        if x is None:
+            x = self.x_initial
+        else:
+            print(f"TO parameters is overwritten to: [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale] = {x}")
 
-        def callback_func(x: list[float]) -> None:
-            with open("opt_hf_new.txt", "a") as f:
-                for var in x:
-                    f.write("{:.9f},".format(var))
-                f.write("\n")
-            print("Current iteration parameters:", x)
+        def callback_func(x: list[float],saveflag: bool = False) -> None:
+            if saveflag:
+                with open("opt_hf_new.txt", "a") as f:
+                    for var in x:
+                        f.write("{:.9f},".format(var))
+                    f.write("\n")
+            print("Current iteration parameters:", x, "Infidelity:", self._avg_fidelity_TO(x))
+            print(f"overwrite protocol from {self.x_initial} to {x}")
+            self._setup_protocol_TO(x)
 
         bounds = (
             (-np.pi, np.pi),
@@ -818,13 +1109,11 @@ class CZGateSimulator:
             bounds=bounds,
             callback=callback_func,
         )
+        print(f"The final optimized protocol is: {self.x_initial}, with infidelity: {self._avg_fidelity_TO(self.x_initial)}")
         return optimres
 
     def _diagnose_run_TO(
-        self, x: list[float],
-        initial: Literal["00", "01", "10", "11",
-                         "SSS-0", "SSS-1", "SSS-2", "SSS-3", "SSS-4", "SSS-5",
-                         "SSS-6", "SSS-7", "SSS-8", "SSS-9", "SSS-10", "SSS-11"]
+        self, x: list[float], initial: InitialStateLabel,
     ) -> list[NDArray[np.floating]]:
         """Run TO simulation and return population time series.
 
@@ -841,34 +1130,7 @@ class CZGateSimulator:
         list of ndarray
             [mid_state_pop, ryd_state_pop, ryd_garb_pop] arrays.
         """
-        # Build basis states
-        s0 = np.array([1, 0, 0, 0, 0, 0, 0], dtype=complex)
-        s1 = np.array([0, 1, 0, 0, 0, 0, 0], dtype=complex)
-        state_00 = np.kron(s0, s0)
-        state_01 = np.kron(s0, s1)
-        state_10 = np.kron(s1, s0)
-        state_11 = np.kron(s1, s1)
-
-        # Map labels to state vectors
-        sss_states = {
-            "00": state_00,
-            "01": state_01,
-            "10": state_10,
-            "11": state_11,
-            "SSS-0": 0.5*state_00 + 0.5*state_01 + 0.5*state_10 + 0.5*state_11,
-            "SSS-1": 0.5*state_00 - 0.5*state_01 - 0.5*state_10 + 0.5*state_11,
-            "SSS-2": 0.5*state_00 + 0.5j*state_01 + 0.5j*state_10 - 0.5*state_11,
-            "SSS-3": 0.5*state_00 - 0.5j*state_01 - 0.5j*state_10 - 0.5*state_11,
-            "SSS-4": state_00,
-            "SSS-5": state_11,
-            "SSS-6": 0.5*state_00 + 0.5*state_01 + 0.5*state_10 - 0.5*state_11,
-            "SSS-7": 0.5*state_00 - 0.5*state_01 - 0.5*state_10 - 0.5*state_11,
-            "SSS-8": 0.5*state_00 + 0.5j*state_01 + 0.5j*state_10 + 0.5*state_11,
-            "SSS-9": 0.5*state_00 - 0.5j*state_01 - 0.5j*state_10 + 0.5*state_11,
-            "SSS-10": state_00/np.sqrt(2) + 1j*state_11/np.sqrt(2),
-            "SSS-11": state_00/np.sqrt(2) - 1j*state_11/np.sqrt(2),
-        }
-
+        sss_states = self._build_sss_state_map()
         if initial not in sss_states:
             raise ValueError(f"Unsupported initial state: '{initial}'")
         ini_state = sss_states[initial]
@@ -925,10 +1187,7 @@ class CZGateSimulator:
         ]
 
     def _diagnose_plot_TO(
-        self, x: list[float],
-        initial: Literal["00", "01", "10", "11",
-                         "SSS-0", "SSS-1", "SSS-2", "SSS-3", "SSS-4", "SSS-5",
-                         "SSS-6", "SSS-7", "SSS-8", "SSS-9", "SSS-10", "SSS-11"]
+        self, x: list[float], initial: InitialStateLabel,
     ) -> None:
         """Generate population evolution plot for TO strategy.
 
@@ -1232,26 +1491,34 @@ class CZGateSimulator:
         )
         return 1 - avg_F
 
-    def _optimization_AR(self, x: list[float]) -> object:
+    def _optimization_AR(self, x: list[float] | None = None) -> object:
         """Run Nelder-Mead optimization for AR pulse parameters.
 
         Parameters
         ----------
-        x : list of float
+        x : list of float, optional
             Initial guess [ω/Ω_eff, A₁, φ₁, A₂, φ₂, δ/Ω_eff, T/T_scale, θ].
+            If None, uses stored parameters.
 
         Returns
         -------
         scipy.optimize.OptimizeResult
             Optimization result.
         """
+        if x is None:
+            x = self.x_initial
+        else:
+            print(f"AR parameters is overwritten to: [ω/Ω_eff, A₁, φ₁, A₂, φ₂, δ/Ω_eff, T/T_scale, θ] = {x}")
 
-        def callback_func(x: list[float]) -> None:
-            with open("opt_hf_new.txt", "a") as f:
-                for var in x:
-                    f.write("{:.9f},".format(var))
-                f.write("\n")
-            print("parameters:", x, "Infidelity:", self._avg_fidelity_AR(x))
+        def callback_func(x: list[float], saveflag: bool = False) -> None:
+            if saveflag:
+                with open("opt_hf_new.txt", "a") as f:
+                    for var in x:
+                        f.write("{:.9f},".format(var))
+                    f.write("\n")
+            print("Current iteration parameters:", x, "Infidelity:", self._avg_fidelity_AR(x))
+            print(f"overwrite protocol from {self.x_initial} to {x}")
+            self._setup_protocol_AR(x)
 
         bounds = (
             (-10, 10),
@@ -1271,10 +1538,11 @@ class CZGateSimulator:
             bounds=bounds,
             callback=callback_func,
         )
+        print(f"The final optimized protocol is: {self.x_initial}, with infidelity: {self._avg_fidelity_AR(self.x_initial)}")
         return optimres
 
     def _diagnose_run_AR(
-        self, x: list[float], initial: Literal["00", "01", "10", "11"]
+        self, x: list[float], initial: InitialStateLabel,
     ) -> list[NDArray[np.floating]]:
         """Run AR simulation and return population time series.
 
@@ -1282,32 +1550,19 @@ class CZGateSimulator:
         ----------
         x : list of float
             AR parameters [ω/Ω_eff, A₁, φ₁, A₂, φ₂, δ/Ω_eff, T/T_scale, θ].
-        initial : {'00', '01', '10', '11'}
-            Initial two-qubit state.
+        initial : str
+            Initial two-qubit state. Supports computational basis states
+            ('00', '01', '10', '11') and SSS states ('SSS-0' through 'SSS-11').
 
         Returns
         -------
         list of ndarray
             [mid_state_pop, ryd_state_pop, ryd_garb_pop] arrays.
         """
-        if initial == "11":
-            ini_state = np.kron(
-                [0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
-            )
-        elif initial == "10":
-            ini_state = np.kron(
-                [0, 1 + 0j, 0, 0, 0, 0, 0], [1 + 0j, 0, 0, 0, 0, 0, 0]
-            )
-        elif initial == "01":
-            ini_state = np.kron(
-                [1 + 0j, 0, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
-            )
-        elif initial == "00":
-            ini_state = np.kron(
-                [1 + 0j, 0, 0, 0, 0, 0, 0], [1 + 0j, 0, 0, 0, 0, 0, 0]
-            )
-        else:
+        sss_states = self._build_sss_state_map()
+        if initial not in sss_states:
             raise ValueError(f"Unsupported initial state: '{initial}'")
+        ini_state = sss_states[initial]
 
         # res_list[:, t] stores state at time t_gate * t/999
         res_list = self._get_gate_result_AR(
@@ -1363,7 +1618,7 @@ class CZGateSimulator:
         ]
 
     def _diagnose_plot_AR(
-        self, x: list[float], initial: Literal["00", "01", "10", "11"]
+        self, x: list[float], initial: InitialStateLabel,
     ) -> None:
         """Generate population evolution plot for AR strategy.
 
@@ -1372,7 +1627,8 @@ class CZGateSimulator:
         x : list of float
             AR parameters.
         initial : str
-            Initial state label.
+            Initial state label. Supports '00', '01', '10', '11'
+            and 'SSS-0' through 'SSS-11'.
         """
         population_evolution = self._diagnose_run_AR(x, initial)
         t_gate = x[6] * self.time_scale
