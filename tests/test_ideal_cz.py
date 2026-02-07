@@ -719,3 +719,70 @@ class TestMonteCarloSimulation:
 
         assert result.n_shots == 10
         assert 0 <= result.mean_fidelity <= 1
+
+
+# ==================================================================
+# TESTS FOR JAX-ACCELERATED MONTE CARLO
+# ==================================================================
+
+
+class TestMonteCarloJax:
+    """Tests for GPU-accelerated JAX Monte Carlo simulation."""
+
+    def test_jax_mc_basic(self):
+        """run_monte_carlo_jax should run and return valid results."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_jax(x, n_shots=5, T2_star=3e-6, seed=42)
+
+        assert result.n_shots == 5
+        assert len(result.fidelities) == 5
+        assert 0 <= result.mean_fidelity <= 1
+        assert result.detuning_samples is not None
+
+    def test_jax_mc_no_errors(self):
+        """JAX MC with no noise should give consistent fidelity."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_jax(
+            x, n_shots=5, T2_star=None, temperature=None, seed=0
+        )
+
+        # Without noise, all shots identical
+        assert result.std_fidelity == pytest.approx(0.0, abs=1e-10)
+        assert result.detuning_samples is None
+        assert result.distance_samples is None
+
+    def test_jax_mc_matches_scipy(self):
+        """JAX MC should agree with SciPy MC for the same perturbations."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            decayflag=False, param_set="our", strategy="TO", blackmanflag=False
+        )
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+        # No noise → deterministic → should match exactly
+        scipy_result = sim.run_monte_carlo_simulation(
+            x, n_shots=1, T2_star=None, temperature=None, seed=42
+        )
+        jax_result = sim.run_monte_carlo_jax(
+            x, n_shots=1, T2_star=None, temperature=None, seed=42
+        )
+
+        np.testing.assert_allclose(
+            jax_result.mean_infidelity, scipy_result.mean_infidelity, atol=1e-6
+        )
+
+    def test_jax_mc_not_implemented_ar(self):
+        """JAX MC should raise NotImplementedError for AR strategy."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        x = [1.0, 0.5, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0]
+        with pytest.raises(NotImplementedError):
+            sim.run_monte_carlo_jax(x, n_shots=5, seed=0)

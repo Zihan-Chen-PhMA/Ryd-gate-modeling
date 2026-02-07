@@ -823,6 +823,7 @@ class CZGateSimulator:
 
         # Run Monte Carlo loop
         for shot in range(n_shots):
+            print(f"Running shot {shot} of {n_shots}")
             # Reset Hamiltonian to original
             self.tq_ham_const = original_ham_const.copy()
             self.v_ryd = original_v_ryd
@@ -865,6 +866,211 @@ class CZGateSimulator:
             fidelities=fidelities,
             detuning_samples=detuning_samples,
             distance_samples=distance_samples,
+        )
+
+    def run_monte_carlo_jax(
+        self,
+        x: list[float],
+        n_shots: int = 1000,
+        T2_star: float | None = 3e-6,
+        temperature: float | None = None,
+        trap_freq: float | None = None,
+        sigma_pos: float | None = None,
+        seed: int = 0,
+    ) -> MonteCarloResult:
+        """GPU-accelerated Monte Carlo simulation using JAX.
+
+        Functionally equivalent to :meth:`run_monte_carlo_simulation` but uses
+        JAX ``odeint`` + ``vmap`` + ``jit`` to run all Monte Carlo shots in
+        parallel on GPU (or CPU). Typically 10-100x faster for large *n_shots*.
+
+        Parameters
+        ----------
+        x : list of float
+            Pulse parameters (TO strategy only: [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale]).
+        n_shots : int, default=1000
+            Number of Monte Carlo shots.
+        T2_star : float or None, default=3e-6
+            Ground-Rydberg coherence time in seconds. ``None`` disables dephasing.
+        temperature : float or None, default=None
+            Atomic temperature in μK.
+        trap_freq : float or None, default=None
+            Trap frequency in kHz.
+        sigma_pos : float or None, default=None
+            Position spread in μm (overrides temperature/trap_freq calculation).
+        seed : int, default=0
+            PRNG seed for reproducibility.
+
+        Returns
+        -------
+        MonteCarloResult
+            Same format as :meth:`run_monte_carlo_simulation`.
+
+        Notes
+        -----
+        - Requires JAX (with optional GPU support).
+        - Only supports TO strategy. AR strategy raises ``NotImplementedError``.
+        - Uses ``jax.experimental.ode.odeint`` (Dormand–Prince) with double precision.
+        """
+        import jax
+        import jax.numpy as jnp
+        from jax.experimental.ode import odeint
+
+        jax.config.update("jax_enable_x64", True)
+
+        if self.strategy != "TO":
+            raise NotImplementedError(
+                "run_monte_carlo_jax only supports TO strategy."
+            )
+        if temperature is not None and trap_freq is None and sigma_pos is None:
+            raise ValueError(
+                "Either trap_freq or sigma_pos must be provided when temperature is set."
+            )
+
+        # --- Extract pulse parameters ---
+        phase_amp = x[0]
+        omega = x[1] * self.rabi_eff
+        phase_init = x[2]
+        delta = x[3] * self.rabi_eff
+        theta = x[4]
+        t_gate = x[5] * self.time_scale
+
+        # --- Convert Hamiltonians to JAX arrays ---
+        H_const_base = jnp.array(self.tq_ham_const)
+        H_420 = jnp.array(self.tq_ham_420)
+        H_420_conj = jnp.array(self.tq_ham_420_conj)
+        H_1013 = jnp.array(self.tq_ham_1013)
+        H_1013_conj = jnp.array(self.tq_ham_1013_conj)
+
+        # Static coupling sum (time-independent)
+        H_1013_sum = H_1013 + H_1013_conj
+
+        # --- Build detuning perturbation mask ---
+        # Rydberg levels are indices 5, 6 in single-atom (7-dim) basis.
+        # Two-atom perturbation = I⊗Δ + Δ⊗I where Δ = diag(0,0,0,0,0,1,1)
+        pert_sq = np.zeros((7, 7), dtype=np.complex128)
+        pert_sq[5, 5] = 1.0
+        pert_sq[6, 6] = 1.0
+        detuning_diag = jnp.array(
+            np.diag(np.kron(np.eye(7), pert_sq) + np.kron(pert_sq, np.eye(7)))
+        )  # shape (49,)
+
+        # --- Build vdW perturbation unit operator ---
+        ham_vdw_unit = jnp.array(self._build_vdw_unit_operator())
+        d_nominal = self._get_nominal_distance()
+        C_6 = self.v_ryd * d_nominal**6
+
+        # --- Compute noise parameters ---
+        sigma_delta = self._compute_detuning_sigma(T2_star) if T2_star else None
+        sigma_position = self._compute_position_sigma(temperature, trap_freq, sigma_pos)
+
+        # --- Sample perturbations ---
+        key = jax.random.PRNGKey(seed)
+        key1, key2, key3 = jax.random.split(key, 3)
+
+        if sigma_delta is not None:
+            delta_errs = jax.random.normal(key1, (n_shots,)) * sigma_delta
+        else:
+            delta_errs = jnp.zeros(n_shots)
+
+        if sigma_position is not None:
+            delta_r1 = jax.random.normal(key2, (n_shots,)) * sigma_position
+            delta_r2 = jax.random.normal(key3, (n_shots,)) * sigma_position
+            d_new = d_nominal + delta_r1 - delta_r2
+            d_new = jnp.maximum(d_new, 0.1)
+            delta_v = C_6 / d_new**6 - self.v_ryd
+        else:
+            d_new = jnp.full(n_shots, d_nominal)
+            delta_v = jnp.zeros(n_shots)
+
+        # --- Build batched H_const: shape (n_shots, 49, 49) ---
+        H_const_batch = (
+            H_const_base[None, :, :]
+            + delta_errs[:, None, None] * jnp.diag(detuning_diag)[None, :, :]
+            + delta_v[:, None, None] * ham_vdw_unit[None, :, :]
+        )
+
+        # --- Initial states ---
+        y0_01 = jnp.array(
+            np.kron([1 + 0j, 0, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0])
+        )
+        y0_11 = jnp.array(
+            np.kron([0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0])
+        )
+
+        # --- Time grid ---
+        t_eval = jnp.linspace(0.0, t_gate, 1000)
+
+        # --- Blackman pulse support ---
+        use_blackman = self.blackmanflag
+        t_rise = self.t_rise
+
+        # --- RHS of Schrödinger equation ---
+        def rhs(y, t, H_c):
+            phase_420 = jnp.exp(
+                -1j * (phase_amp * jnp.cos(omega * t + phase_init) + delta * t)
+            )
+            if use_blackman:
+                # JAX-compatible Blackman pulse
+                bw = lambda tt, tr: (
+                    0.42 - 0.5 * jnp.cos(2 * jnp.pi * tt / (2 * tr))
+                    + 0.08 * jnp.cos(4 * jnp.pi * tt / (2 * tr))
+                )
+                amp_rise = bw(t, t_rise) * (t < t_rise)
+                amp_fall = bw(t_gate - t, t_rise) * ((t_gate - t) < t_rise)
+                amp_flat = ((t >= t_rise) & (t <= t_gate - t_rise)).astype(y.dtype)
+                amplitude = amp_rise + amp_flat + amp_fall
+            else:
+                amplitude = 1.0
+            H = (
+                H_c
+                + amplitude * phase_420 * H_420
+                + amplitude * jnp.conj(phase_420) * H_420_conj
+                + H_1013_sum
+            )
+            return -1j * (H @ y)
+
+        # --- Single-shot: evolve |01⟩ and |11⟩, compute infidelity ---
+        def single_shot_infidelity(H_c):
+            sol_01 = odeint(rhs, y0_01, t_eval, H_c, rtol=1e-8, atol=1e-12)
+            psi_01 = sol_01[-1]  # final state
+
+            sol_11 = odeint(rhs, y0_11, t_eval, H_c, rtol=1e-8, atol=1e-12)
+            psi_11 = sol_11[-1]
+
+            # Overlaps
+            a01 = jnp.exp(-1.0j * theta) * jnp.vdot(y0_01, psi_01)
+            a11 = jnp.exp(-2.0j * theta - 1.0j * jnp.pi) * jnp.vdot(y0_11, psi_11)
+
+            # Average gate fidelity
+            avg_F = (1.0 / 20.0) * (
+                jnp.abs(1.0 + 2.0 * a01 + a11) ** 2
+                + 1.0
+                + 2.0 * jnp.abs(a01) ** 2
+                + jnp.abs(a11) ** 2
+            )
+            return 1.0 - avg_F.real
+
+        # --- Vectorize + JIT ---
+        batched_infidelity = jax.jit(jax.vmap(single_shot_infidelity))
+        infidelities_jax = batched_infidelity(H_const_batch)
+
+        # --- Convert to numpy ---
+        infidelities = np.asarray(infidelities_jax)
+        fidelities = 1.0 - infidelities
+
+        mean_fid = float(np.mean(fidelities))
+        std_fid = float(np.std(fidelities))
+
+        return MonteCarloResult(
+            mean_fidelity=mean_fid,
+            std_fidelity=std_fid,
+            mean_infidelity=float(np.mean(infidelities)),
+            std_infidelity=float(np.std(infidelities)),
+            n_shots=n_shots,
+            fidelities=fidelities,
+            detuning_samples=np.asarray(delta_errs) if sigma_delta is not None else None,
+            distance_samples=np.asarray(d_new) if sigma_position is not None else None,
         )
 
     def _compute_detuning_sigma(self, T2_star: float) -> float:
