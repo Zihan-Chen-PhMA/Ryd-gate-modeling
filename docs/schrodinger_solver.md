@@ -35,10 +35,15 @@ This document describes the `CZGateSimulator` class in `ideal_cz.py`, which prov
 
 ```python
 CZGateSimulator(
-    decayflag: bool,
     param_set: Literal['our', 'lukin'] = 'our',
     strategy: Literal['TO', 'AR'] = 'AR',
-    blackmanflag: bool = True
+    blackmanflag: bool = True,
+    *,
+    enable_rydberg_decay: bool = False,
+    enable_intermediate_decay: bool = False,
+    enable_rydberg_dephasing: bool = False,
+    enable_position_error: bool = False,
+    enable_polarization_leakage: bool = False,
 )
 ```
 
@@ -46,17 +51,21 @@ CZGateSimulator(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `decayflag` | `bool` | (required) | Include spontaneous emission as imaginary energy |
 | `param_set` | `str` | `'our'` | Physical parameter configuration |
 | `strategy` | `str` | `'AR'` | Pulse optimization strategy |
 | `blackmanflag` | `bool` | `True` | Apply Blackman envelope for smooth pulses |
+| `enable_rydberg_decay` | `bool` | `False` | Include Rydberg state decay as imaginary energy shifts |
+| `enable_intermediate_decay` | `bool` | `False` | Include intermediate state decay as imaginary energy shifts |
+| `enable_rydberg_dephasing` | `bool` | `False` | Gate T2* dephasing noise in Monte Carlo |
+| `enable_position_error` | `bool` | `False` | Gate position fluctuation noise in Monte Carlo |
+| `enable_polarization_leakage` | `bool` | `False` | Include coupling to unwanted Rydberg state |r'⟩ |
 
 ### Public Methods
 
 | Method | Description |
 |--------|-------------|
 | `optimize(x_initial)` | Run pulse parameter optimization |
-| `avg_fidelity(x)` | Calculate average gate infidelity |
+| `gate_fidelity(x, fid_type)` | Calculate average gate infidelity |
 | `diagnose_plot(x, initial_state)` | Plot population evolution |
 | `diagnose_run(x, initial_state)` | Return population time series |
 | `plot_bloch(x, save=True)` | Generate Bloch sphere plots (TO only) |
@@ -168,7 +177,7 @@ Phase modulation with dual sine for first-order amplitude robustness:
 from ryd_gate.ideal_cz import CZGateSimulator
 
 # Initialize with TO strategy, no decay
-sim = CZGateSimulator(decayflag=False, param_set='our', strategy='TO')
+sim = CZGateSimulator(param_set='our', strategy='TO')
 
 # Initial guess for pulse parameters
 x0 = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
@@ -195,12 +204,12 @@ mid_pop, ryd_pop, ryd_garb_pop = sim.diagnose_run(result.x, '11')
 import numpy as np
 
 # TO strategy
-sim_TO = CZGateSimulator(decayflag=False, strategy='TO')
+sim_TO = CZGateSimulator(strategy='TO')
 x_TO = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
 result_TO = sim_TO.optimize(x_TO)
 
 # AR strategy
-sim_AR = CZGateSimulator(decayflag=False, strategy='AR')
+sim_AR = CZGateSimulator(strategy='AR')
 x_AR = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
 result_AR = sim_AR.optimize(x_AR)
 
@@ -211,7 +220,7 @@ print(f"AR infidelity: {result_AR.fun:.6f}")
 ### Bloch Sphere Visualization (TO only)
 
 ```python
-sim = CZGateSimulator(decayflag=False, strategy='TO')
+sim = CZGateSimulator(strategy='TO')
 x_opt = [0.1122, 1.0431, -0.726, 0.0, 0.452, 1.219]
 
 # Generate Bloch sphere plots for |01⟩→|0r⟩ and |11⟩→|W⟩ transitions
@@ -223,10 +232,14 @@ sim.plot_bloch(x_opt, save=True)
 
 ```python
 # With spontaneous emission (imaginary energy shift approximation)
-sim_decay = CZGateSimulator(decayflag=True, param_set='our', strategy='AR')
+sim_decay = CZGateSimulator(
+    param_set='our', strategy='AR',
+    enable_rydberg_decay=True, enable_intermediate_decay=True,
+    enable_polarization_leakage=True,
+)
 
 x0 = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
-infid = sim_decay.avg_fidelity(x0)
+infid = sim_decay.gate_fidelity(x0)
 print(f"Infidelity with decay: {infid:.6f}")
 
 # Note: For accurate decay modeling, use full_error_model.py instead
@@ -251,7 +264,7 @@ The Clebsch-Gordan coefficients from ARC library account for the hyperfine struc
 
 ## Notes
 
-1. **Imaginary energy approximation**: When `decayflag=True`, decay is modeled as imaginary energy shifts in the diagonal Hamiltonian. This is approximate; for accurate decay/leakage modeling, use `full_error_model.py`.
+1. **Imaginary energy approximation**: When `enable_rydberg_decay` or `enable_intermediate_decay` is True, decay is modeled as imaginary energy shifts in the diagonal Hamiltonian. This is approximate; for accurate decay/leakage modeling, use `full_error_model.py`.
 
 2. **Optimization algorithm**: Uses SciPy's Nelder-Mead optimizer with `fatol=1e-9`. The callback writes intermediate parameters to `opt_hf_new.txt`.
 

@@ -18,7 +18,8 @@ X_TO = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
 def simulator():
     """Create a CZGateSimulator instance."""
     return CZGateSimulator(
-        decayflag=False, param_set='our', strategy='TO', blackmanflag=False
+        param_set='our', strategy='TO', blackmanflag=False,
+        enable_polarization_leakage=True,
     )
 
 
@@ -50,7 +51,7 @@ def test_cz_phase_relation(simulator, computational_basis):
             t_gate=X_TO[5] * simulator.time_scale,
             state_mat=state,
         )
-        phases[label] = np.angle(state.conj().dot(res[:, -1]))
+        phases[label] = np.angle(state.conj().dot(res))
 
     # CZ phase = φ₁₁ - φ₀₁ - φ₁₀ + φ₀₀ should be ±π
     cz_phase = phases['11'] - phases['01'] - phases['10'] + phases['00']
@@ -77,7 +78,7 @@ def test_single_qubit_phase_symmetry(simulator, computational_basis):
             t_gate=X_TO[5] * simulator.time_scale,
             state_mat=state,
         )
-        phases[label] = np.angle(state.conj().dot(res[:, -1]))
+        phases[label] = np.angle(state.conj().dot(res))
 
     # |01⟩ and |10⟩ should have the same phase relative to |00⟩
     phase_01_rel = phases['01'] - phases['00']
@@ -102,7 +103,7 @@ def test_computational_basis_fidelity(simulator, computational_basis):
             delta=X_TO[3] * simulator.rabi_eff,
             t_gate=t_gate,
             state_mat=state,
-        )[:, -1]
+        )
 
         # Population remaining in computational subspace
         pop = np.abs(state.conj().dot(res)) ** 2

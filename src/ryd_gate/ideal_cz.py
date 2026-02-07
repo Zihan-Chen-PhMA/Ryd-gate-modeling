@@ -120,10 +120,6 @@ class CZGateSimulator:
 
     Parameters
     ----------
-    decayflag : bool
-        Whether to include spontaneous emission as imaginary energy shifts.
-        When True, Rydberg and intermediate state decay rates are added to
-        the diagonal Hamiltonian elements.
     param_set : {'our', 'lukin'}, default='our'
         Physical parameter configuration:
         - 'our': Lab parameters with n=70 Rydberg level, Ω_eff=7 MHz
@@ -134,6 +130,22 @@ class CZGateSimulator:
         - 'AR': Amplitude-Robust with dual sine phase modulation
     blackmanflag : bool, default=True
         Whether to apply Blackman pulse envelope for smooth turn-on/off.
+    enable_rydberg_decay : bool, default=False
+        Include Rydberg state (|r⟩, |r'⟩) spontaneous decay as imaginary
+        energy shifts on states 5, 6.
+    enable_intermediate_decay : bool, default=False
+        Include intermediate state (|e1⟩, |e2⟩, |e3⟩) spontaneous decay
+        as imaginary energy shifts on states 2, 3, 4.
+    enable_rydberg_dephasing : bool, default=False
+        Gate T2* dephasing noise in Monte Carlo simulations. When False,
+        ``T2_star`` parameters in MC methods are ignored.
+    enable_position_error : bool, default=False
+        Gate position fluctuation noise in Monte Carlo simulations. When
+        False, ``temperature``/``sigma_pos`` parameters in MC methods are
+        ignored.
+    enable_polarization_leakage : bool, default=False
+        Include coupling to the unwanted Rydberg state |r'⟩ (state 6)
+        via off-polarization Clebsch-Gordan coefficients.
 
     Attributes
     ----------
@@ -146,12 +158,20 @@ class CZGateSimulator:
 
     Examples
     --------
-    Basic optimization with TO strategy:
+    Basic optimization with TO strategy (perfect gate, all error sources off):
 
-    >>> sim = CZGateSimulator(decayflag=False, param_set='our', strategy='TO')
+    >>> sim = CZGateSimulator(param_set='our', strategy='TO')
     >>> x0 = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]  # Initial pulse parameters
     >>> result = sim.optimize(x0)
     >>> print(f"Optimized infidelity: {result.fun:.6f}")
+
+    Include decay and polarization leakage:
+
+    >>> sim = CZGateSimulator(
+    ...     enable_rydberg_decay=True,
+    ...     enable_intermediate_decay=True,
+    ...     enable_polarization_leakage=True,
+    ... )
 
     Population diagnostics:
 
@@ -183,18 +203,21 @@ class CZGateSimulator:
 
     def __init__(
         self,
-        decayflag: bool,
         param_set: Literal["our", "lukin"] = "our",
         strategy: Literal["TO", "AR"] = "AR",
         blackmanflag: bool = True,
         detuning_sign: Literal[1, -1] = 1,
+        *,
+        enable_rydberg_decay: bool = False,
+        enable_intermediate_decay: bool = False,
+        enable_rydberg_dephasing: bool = False,
+        enable_position_error: bool = False,
+        enable_polarization_leakage: bool = False,
     ) -> None:
         """Initialize the CZ gate simulator with specified parameters.
 
         Parameters
         ----------
-        decayflag : bool
-            Whether to include decay rates in the Hamiltonian.
         param_set : {'our', 'lukin'}
             Parameter set to use.
         strategy : {'TO', 'AR'}
@@ -202,19 +225,35 @@ class CZGateSimulator:
         blackmanflag : bool
             Whether to use Blackman envelope.
         detuning_sign : {1, -1}
-            Sign of intermediate detuning. +1 for blue/bright detuning,
+            Sign of intermediate detuning.
+            +1 for blue/bright detuning, i.e., delta*Delta
             -1 for red/dark detuning.
+        enable_rydberg_decay : bool
+            Include Rydberg state decay as imaginary energy shifts.
+        enable_intermediate_decay : bool
+            Include intermediate state decay as imaginary energy shifts.
+        enable_rydberg_dephasing : bool
+            Gate T2* dephasing noise in Monte Carlo simulations.
+        enable_position_error : bool
+            Gate position fluctuation noise in Monte Carlo simulations.
+        enable_polarization_leakage : bool
+            Include coupling to the unwanted Rydberg state |r'⟩.
         """
         self.param_set = param_set
         self.strategy = strategy
         self.blackmanflag = blackmanflag
         self.detuning_sign = detuning_sign
+        self.enable_rydberg_decay = enable_rydberg_decay
+        self.enable_intermediate_decay = enable_intermediate_decay
+        self.enable_rydberg_dephasing = enable_rydberg_dephasing
+        self.enable_position_error = enable_position_error
+        self.enable_polarization_leakage = enable_polarization_leakage
         self.x_initial: list[float] | None = None
 
         if param_set == "our":
-            self._init_our_params(decayflag)
+            self._init_our_params()
         elif param_set == "lukin":
-            self._init_lukin_params(decayflag)
+            self._init_lukin_params()
         else:
             raise ValueError(
                 f"Unknown parameter set: '{param_set}'. Choose 'our' or 'lukin'."
@@ -224,14 +263,8 @@ class CZGateSimulator:
     # INITIALIZATION HELPERS
     # ==================================================================
 
-    def _init_our_params(self, decayflag: bool) -> None:
-        """Initialize 'our' lab experimental parameters (n=70 Rydberg).
-
-        Parameters
-        ----------
-        decayflag : bool
-            Whether to include decay rates in the Hamiltonian.
-        """
+    def _init_our_params(self) -> None:
+        """Initialize 'our' lab experimental parameters (n=70 Rydberg)."""
         self.atom = Rubidium87()
         self.temperature = 300 # K
         # Rydberg level and laser parameters
@@ -265,33 +298,27 @@ class CZGateSimulator:
         # So we take C_6 = h*1337GHz*um^6/(hbar) = (2 pi)*1337GHz*um^6
         self.v_ryd = 2 * np.pi * 874e9 / 3**6  # Van der Waals at ~3 μm
         self.v_ryd_garb = 2 * np.pi * 874e9 /3**6 # Suppose the garbage state has the identical van der Waals interaction
-        self.ryd_zeeman_shift = 2 * np.pi * 56e6
+        self.ryd_zeeman_shift = 2 * np.pi * 56e6 if self.enable_polarization_leakage else  2 * np.pi * 56e9
 
         # Decay rate parameters
         # 6P3/2 lifetime 120.7 ± 1.2 ns, refer from https://arxiv.org/abs/physics/0409077
-        self.mid_state_decay_rate = 1 / (110.7e-9)  
+        self.mid_state_decay_rate = 1 / (110.7e-9)
         self.mid_garb_decay_rate = 1 / (110.7e-9)
         # refer to the data from https://arxiv.org/abs/0810.0339, Table VII, 70S1/2 @ 300 K
-        self.ryd_state_decay_rate = 1 / (151.55e-6)  
+        self.ryd_state_decay_rate = 1 / (151.55e-6)
         # Suppose the garbage state has the identical decay rate
         self.ryd_garb_decay_rate = 1 / (151.55e-6)
 
         # Build Hamiltonians
-        self.tq_ham_const = self._tq_ham_const(decayflag)
+        self.tq_ham_const = self._tq_ham_const()
         self.tq_ham_420 = self._tq_ham_420_our()
         self.tq_ham_1013 = self._tq_ham_1013_our()
         self.tq_ham_420_conj = self._tq_ham_420_our().conj().T
         self.tq_ham_1013_conj = self._tq_ham_1013_our().conj().T
         self.t_rise = 20e-9  # Blackman pulse rise time
 
-    def _init_lukin_params(self, decayflag: bool) -> None:
-        """Initialize 'lukin' (Harvard) experimental parameters (n=53 Rydberg).
-
-        Parameters
-        ----------
-        decayflag : bool
-            Whether to include decay rates in the Hamiltonian.
-        """
+    def _init_lukin_params(self) -> None:
+        """Initialize 'lukin' (Harvard) experimental parameters (n=53 Rydberg)."""
         self.atom = Rubidium87()
 
         # Rydberg level and laser parameters
@@ -318,7 +345,7 @@ class CZGateSimulator:
         # Rydberg interaction and Zeeman shift
         self.v_ryd = 2 * np.pi * 450e6
         self.v_ryd_garb = 2 * np.pi * 450e6
-        self.ryd_zeeman_shift = 2 * np.pi * 2.4e9
+        self.ryd_zeeman_shift = 2 * np.pi * 2.4e9 if self.enable_polarization_leakage else 2 * np.pi * 2.4e12
 
         # Decay rate parameters
         self.mid_state_decay_rate = 1 / (110e-9)
@@ -327,7 +354,7 @@ class CZGateSimulator:
         self.ryd_garb_decay_rate = 1 / (88e-6)
 
         # Build Hamiltonians
-        self.tq_ham_const = self._tq_ham_const(decayflag)
+        self.tq_ham_const = self._tq_ham_const()
         self.tq_ham_420 = self._tq_ham_420_lukin()
         self.tq_ham_1013 = self._tq_ham_1013_lukin()
         self.tq_ham_420_conj = self._tq_ham_420_lukin().conj().T
@@ -428,7 +455,7 @@ class CZGateSimulator:
 
             sim.setup_protocol(x0)
             sim.optimize()        # uses stored x0 as initial guess
-            sim.avg_fidelity()    # uses stored (optimized) params
+            sim.gate_fidelity()   # uses stored (optimized) params
 
         Parameters
         ----------
@@ -439,7 +466,11 @@ class CZGateSimulator:
         """
         self._setup_protocol(x)
 
-    def optimize(self, x_initial = None) -> object:
+    def optimize(
+        self,
+        x_initial=None,
+        fid_type: Literal["average", "sss", "bell"] = "average",
+    ) -> object:
         """Run pulse parameter optimization for the configured strategy.
 
         Parameters
@@ -448,6 +479,9 @@ class CZGateSimulator:
             Initial guess for pulse parameters. Format depends on strategy:
             - TO: [A, ω, φ₀, δ, θ, T] (6 parameters)
             - AR: [ω, A₁, φ₁, A₂, φ₂, δ, T, θ] (8 parameters)
+        fid_type : {'average', 'sss', 'bell'}, default='average'
+            Fidelity metric used as the optimization objective. See
+            :meth:`gate_fidelity` for details.
 
         Returns
         -------
@@ -455,16 +489,20 @@ class CZGateSimulator:
             Optimization result containing optimal parameters in `x` attribute
             and final infidelity in `fun` attribute.
         """
-        if self.strategy == "TO":
-            return self._optimization_TO(x_initial)
+        if (self.strategy == "TO"):
+            return self._optimization_TO(fid_type, x=x_initial)
         elif self.strategy == "AR":
-            return self._optimization_AR(x_initial)
+            return self._optimization_AR(fid_type, x=x_initial)
         else:
             raise ValueError(
                 f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
             )
 
-    def avg_fidelity(self, x: list[float] | None = None) -> float:
+    def gate_fidelity(
+        self,
+        x: list[float] | None = None,
+        fid_type: Literal["average", "sss", "bell"] = "average",
+    ) -> float:
         """Calculate average gate infidelity for given pulse parameters.
 
         Parameters
@@ -472,6 +510,15 @@ class CZGateSimulator:
         x : list of float, optional
             Pulse parameters (format depends on strategy).
             If None, uses parameters stored via setup_protocol().
+        fid_type : {'average', 'sss', 'bell'}, default='average'
+            Method for computing average gate fidelity:
+
+            - ``'average'`` — Nielsen closed-form formula using only |01⟩ and
+              |11⟩ overlaps. 2 ODE solves per call (fastest).
+            - ``'sss'`` — Average state infidelity over 12 symmetric
+              superposition states. 12 ODE solves per call.
+            - ``'bell'`` — Average state infidelity over 4 Bell states
+              (|Φ±⟩, |Ψ±⟩). 4 ODE solves per call.
 
         Returns
         -------
@@ -479,15 +526,43 @@ class CZGateSimulator:
             Average gate infidelity (1 - F), where F is the fidelity.
             Value is bounded between 0 and 1.
         """
-        x = self._resolve_params(x, "avg_fidelity")
+        x = self._resolve_params(x, "gate_fidelity")
         if self.strategy == "TO":
-            return self._avg_fidelity_TO(x)
+            if fid_type == "sss":
+                return self.fidelity_sss(x)
+            elif fid_type == "bell":
+                return self.fidelity_bell(x)
+            elif fid_type == "average":
+                return self.fidelity_avg(x)
         elif self.strategy == "AR":
-            return self._avg_fidelity_AR(x)
-        else:
-            raise ValueError(
-                f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
-            )
+            if fid_type == "average":
+                return self._avg_fidelity_AR(x)
+            else:
+                raise ValueError(
+                    f"Fidelity type '{fid_type}' is not implemented for AR strategy. "
+                    "Choose 'average'."
+                )
+        raise ValueError(
+            f"Unknown fid_type: '{fid_type}'. Choose 'average', 'sss', or 'bell'."
+        )
+
+    def fidelity_sss(self, x: list[float]) -> float:
+        """Average state infidelity over 12 SSS states."""
+        return sum(self.state_infidelity(f"SSS-{i}", x) for i in range(12)) / 12
+
+    def fidelity_bell(self, x: list[float]) -> float:
+        """Average state infidelity over 4 Bell states."""
+        s0 = np.array([1, 0, 0, 0, 0, 0, 0], dtype=complex)
+        s1 = np.array([0, 1, 0, 0, 0, 0, 0], dtype=complex)
+        st00, st01 = np.kron(s0, s0), np.kron(s0, s1)
+        st10, st11 = np.kron(s1, s0), np.kron(s1, s1)
+        bell_states = [
+            (st00 + st11) / np.sqrt(2),  # Phi+
+            (st00 - st11) / np.sqrt(2),  # Phi-
+            (st01 + st10) / np.sqrt(2),  # Psi+
+            (st01 - st10) / np.sqrt(2),  # Psi-
+        ]
+        return sum(self.state_infidelity(b, x) for b in bell_states) / 4
 
     def diagnose_plot(
         self,
@@ -635,7 +710,7 @@ class CZGateSimulator:
         state_11 = np.kron(s1, s1)
 
         # Evolve and take final state
-        res = self.get_gate_result(ini_state, x)[:, -1]
+        res = self.get_gate_result(ini_state, x)
 
         # Build ideal final state: (Rz⊗Rz) · CZ · |ψ₀⟩
         c00 = np.vdot(state_00, ini_state)
@@ -655,6 +730,7 @@ class CZGateSimulator:
         self,
         state_mat: NDArray[np.complexfloating],
         x: list[float] | None = None,
+        t_eval: NDArray[np.floating] | None = None,
     ) -> NDArray[np.complexfloating]:
         """Evolve a quantum state under the configured pulse protocol.
 
@@ -665,11 +741,15 @@ class CZGateSimulator:
         x : list of float, optional
             Pulse parameters (format depends on strategy).
             If None, uses parameters stored via setup_protocol().
+        t_eval : ndarray or None, optional
+            Times at which to store the solution. If None, only the final
+            state is returned as a 1-D array of shape (49,).
 
         Returns
         -------
         ndarray
-            State evolution array of shape (49, 1000).
+            If t_eval is provided: shape (49, len(t_eval)).
+            If t_eval is None: shape (49,) — the final state only.
         """
         x = self._resolve_params(x, "get_gate_result")
         if self.strategy == "TO":
@@ -680,6 +760,7 @@ class CZGateSimulator:
                 delta=x[3] * self.rabi_eff,
                 t_gate=x[5] * self.time_scale,
                 state_mat=state_mat,
+                t_eval=t_eval,
             )
         elif self.strategy == "AR":
             return self._get_gate_result_AR(
@@ -691,6 +772,7 @@ class CZGateSimulator:
                 delta=x[5] * self.rabi_eff,
                 t_gate=x[6] * self.time_scale,
                 state_mat=state_mat,
+                t_eval=t_eval,
             )
         else:
             raise ValueError(
@@ -780,7 +862,7 @@ class CZGateSimulator:
         --------
         Run with T2* dephasing only:
 
-        >>> sim = CZGateSimulator(decayflag=False, strategy='TO')
+        >>> sim = CZGateSimulator(strategy='TO')
         >>> result = sim.run_monte_carlo_simulation(x_opt, n_shots=500, T2_star=3e-6)
         >>> print(f"Mean fidelity: {result.mean_fidelity:.6f} ± {result.std_fidelity:.6f}")
 
@@ -805,9 +887,17 @@ class CZGateSimulator:
         # Initialize RNG
         rng = np.random.default_rng(seed)
 
-        # Compute noise parameters
-        sigma_delta = self._compute_detuning_sigma(T2_star) if T2_star else None
-        sigma_position = self._compute_position_sigma(temperature, trap_freq, sigma_pos)
+        # Compute noise parameters (gated by enable flags)
+        sigma_delta = (
+            self._compute_detuning_sigma(T2_star)
+            if self.enable_rydberg_dephasing and T2_star
+            else None
+        )
+        sigma_position = (
+            self._compute_position_sigma(temperature, trap_freq, sigma_pos)
+            if self.enable_position_error
+            else None
+        )
 
         # Store original Hamiltonian
         original_ham_const = self.tq_ham_const.copy()
@@ -823,7 +913,6 @@ class CZGateSimulator:
 
         # Run Monte Carlo loop
         for shot in range(n_shots):
-            print(f"Running shot {shot} of {n_shots}")
             # Reset Hamiltonian to original
             self.tq_ham_const = original_ham_const.copy()
             self.v_ryd = original_v_ryd
@@ -845,7 +934,7 @@ class CZGateSimulator:
                 self._apply_interaction_perturbation(d_new, ham_vdw_unit)
 
             # Compute fidelity for this shot
-            infidelity = self.avg_fidelity(x)
+            infidelity = self.gate_fidelity(x)
             fidelities[shot] = 1.0 - infidelity
 
         # Restore original state
@@ -960,9 +1049,17 @@ class CZGateSimulator:
         d_nominal = self._get_nominal_distance()
         C_6 = self.v_ryd * d_nominal**6
 
-        # --- Compute noise parameters ---
-        sigma_delta = self._compute_detuning_sigma(T2_star) if T2_star else None
-        sigma_position = self._compute_position_sigma(temperature, trap_freq, sigma_pos)
+        # --- Compute noise parameters (gated by enable flags) ---
+        sigma_delta = (
+            self._compute_detuning_sigma(T2_star)
+            if self.enable_rydberg_dephasing and T2_star
+            else None
+        )
+        sigma_position = (
+            self._compute_position_sigma(temperature, trap_freq, sigma_pos)
+            if self.enable_position_error
+            else None
+        )
 
         # --- Sample perturbations ---
         key = jax.random.PRNGKey(seed)
@@ -1162,12 +1259,13 @@ class CZGateSimulator:
             Unit vdW operator of shape (49, 49).
         """
         ham_vdw_mat = np.zeros((7, 7))
-        ham_vdw_mat_garb = np.zeros((7, 7))
         ham_vdw_mat[5][5] = 1
+        ham_vdw_mat_garb = np.zeros((7, 7))
         ham_vdw_mat_garb[6][6] = 1
         return np.kron(
             ham_vdw_mat + ham_vdw_mat_garb, ham_vdw_mat + ham_vdw_mat_garb
         )
+
 
     def _apply_detuning_perturbation(self, delta_err: float) -> None:
         """Apply detuning perturbation to Rydberg states.
@@ -1263,7 +1361,7 @@ class CZGateSimulator:
             - 'position_contribution': Isolated position contribution
         """
         # Ideal (no noise)
-        ideal_infidelity = self.avg_fidelity(x)
+        ideal_infidelity = self.gate_fidelity(x)
 
         # T2* only
         result_t2 = self.run_monte_carlo_simulation(
@@ -1310,16 +1408,12 @@ class CZGateSimulator:
     # HAMILTONIAN CONSTRUCTION
     # ==================================================================
 
-    def _tq_ham_const(self, decayflag: bool) -> NDArray[np.complexfloating]:
+    def _tq_ham_const(self) -> NDArray[np.complexfloating]:
         """Build the time-independent two-atom Hamiltonian.
 
         Includes intermediate state detunings, Rydberg detunings, decay rates
         (as imaginary energy), and Rydberg-Rydberg van der Waals interaction.
-
-        Parameters
-        ----------
-        decayflag : bool
-            Whether to include decay as imaginary energy shifts.
+        Decay and polarization leakage are controlled by ``self.enable_*`` flags.
 
         Returns
         -------
@@ -1329,8 +1423,8 @@ class CZGateSimulator:
         ham_tq_mat = np.zeros((49, 49), dtype=np.complex128)
         ham_sq_mat = np.zeros((7, 7), dtype=np.complex128)
         delta = 0
-        middecay = self.mid_state_decay_rate if decayflag else 0
-        ryddecay = self.ryd_state_decay_rate if decayflag else 0
+        middecay = self.mid_state_decay_rate if self.enable_intermediate_decay else 0
+        ryddecay = self.ryd_state_decay_rate if self.enable_rydberg_decay else 0
 
         # Intermediate state energies with hyperfine splitting
         ham_sq_mat[2][2] = self.Delta - 2 * np.pi * 51e6 - 1j * middecay / 2
@@ -1347,13 +1441,12 @@ class CZGateSimulator:
 
         # Rydberg-Rydberg van der Waals interaction
         ham_vdw_mat = np.zeros((7, 7))
-        ham_vdw_mat_garb = np.zeros((7, 7))
         ham_vdw_mat[5][5] = 1
+        ham_vdw_mat_garb = np.zeros((7, 7))
         ham_vdw_mat_garb[6][6] = 1
         ham_tq_mat = ham_tq_mat + self.v_ryd * np.kron(
             ham_vdw_mat + ham_vdw_mat_garb, ham_vdw_mat + ham_vdw_mat_garb
         )
-
         return ham_tq_mat
 
     def _occ_operator(self, index: int) -> NDArray[np.complexfloating]:
@@ -1596,6 +1689,7 @@ class CZGateSimulator:
         delta: float,
         t_gate: float,
         state_mat: NDArray[np.complexfloating],
+        t_eval: NDArray[np.floating] | None = None,
     ) -> NDArray[np.complexfloating]:
         """Evolve quantum state under Time-Optimal pulse protocol.
 
@@ -1616,13 +1710,18 @@ class CZGateSimulator:
             Total gate duration (seconds).
         state_mat : ndarray
             Initial state vector of shape (49,).
+        t_eval : ndarray or None, optional
+            Times at which to store the solution. If None, only the final
+            state is returned as a 1-D array of shape (49,).
 
         Returns
         -------
         ndarray
-            State evolution array of shape (49, 1000) where column t
-            contains the state at time t_gate * t/999.
+            If t_eval is provided: shape (49, len(t_eval)).
+            If t_eval is None: shape (49,) — the final state only.
         """
+        # Precompute static Hamiltonian (folds 1013 into const)
+        ham_static = self.tq_ham_const + self.tq_ham_1013 + self.tq_ham_1013_conj
 
         def fun(
             t: float,
@@ -1640,32 +1739,33 @@ class CZGateSimulator:
             amplitude = blackman_pulse(t, self.t_rise, t_gate) if self.blackmanflag else 1
 
             ham_tq_mat = (
-                self.tq_ham_const
+                ham_static
                 + amplitude * phase_420 * self.tq_ham_420
                 + amplitude * phase_420_conj * self.tq_ham_420_conj
-                + self.tq_ham_1013
-                + self.tq_ham_1013_conj
             )
-            diff = -1j * ham_tq_mat
-            y_arr = np.reshape(np.array(y), (-1, 1))
-            return np.reshape(np.matmul(diff, y_arr), (-1))
+            return -1j * ham_tq_mat @ y
 
         args = (phase_init, omega, phase_amp, delta, t_gate)
         t_span = [0, t_gate]
-        t_eval = np.linspace(0, t_gate, 1000)
-        result = integrate.solve_ivp(
-            fun,
-            t_span,
-            state_mat,
-            t_eval=t_eval,
-            args=args,
+        solve_kwargs = dict(
             method="DOP853",
             rtol=1e-8,
             atol=1e-12,
         )
-        return np.array(result.y)
+        if t_eval is not None:
+            solve_kwargs["t_eval"] = t_eval
+        result = integrate.solve_ivp(
+            fun,
+            t_span,
+            state_mat,
+            args=args,
+            **solve_kwargs,
+        )
+        if t_eval is not None:
+            return np.array(result.y)
+        return np.array(result.y[:, -1])
 
-    def _avg_fidelity_TO(self, x: list[float]) -> float:
+    def fidelity_avg(self, x: list[float]) -> float:
         """Calculate average gate infidelity for TO parameters.
 
         Computes overlap with ideal CZ gate for |01⟩ and |11⟩ initial states
@@ -1694,7 +1794,7 @@ class CZGateSimulator:
             delta=x[3] * self.rabi_eff,
             t_gate=x[5] * self.time_scale,
             state_mat=ini_state,
-        )[:, -1]
+        )
         a01 = np.exp(-1.0j * theta) * ini_state.conj().dot(res.T)
 
         # Compute |11⟩ → -|11⟩ overlap (CZ applies π phase)
@@ -1708,14 +1808,15 @@ class CZGateSimulator:
             delta=x[3] * self.rabi_eff,
             t_gate=x[5] * self.time_scale,
             state_mat=ini_state,
-        )[:, -1]
+        )
         a11 = np.exp(-2.0j * theta - 1.0j * np.pi) * ini_state.conj().dot(res.T)
 
         # Average gate fidelity formula
         avg_F = (1 / 20) * (abs(1 + 2 * a01 + a11) ** 2 + 1 + 2 * abs(a01) ** 2 + abs(a11) ** 2)
+        print(f"Average Fidelity: {avg_F}")
         return 1 - avg_F
 
-    def _optimization_TO(self, x: list[float] = None) -> object:
+    def _optimization_TO(self, fid_type, x: list[float] = None) -> object:
         """Run Nelder-Mead optimization for TO pulse parameters.
 
         Parameters
@@ -1723,6 +1824,8 @@ class CZGateSimulator:
         x : list of float
             Initial guess [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale].
             If None, use default parameters.
+        fid_type : str
+            Fidelity metric passed to :meth:`gate_fidelity`.
 
         Returns
         -------
@@ -1731,18 +1834,27 @@ class CZGateSimulator:
         """
         if x is None:
             x = self.x_initial
-        else:
-            print(f"TO parameters is overwritten to: [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale] = {x}")
+        if fid_type == "average":
+            raw_objective = self.fidelity_avg
+        if fid_type == "bell":
+            raw_objective = self.fidelity_bell
+        if fid_type == "sss":
+            raw_objective = self.fidelity_sss
 
-        def callback_func(x: list[float],saveflag: bool = False) -> None:
+        cache = {}
+
+        def objective(x):
+            val = raw_objective(x)
+            cache['last_val'] = val
+            return val
+
+        def callback_func(x: list[float], saveflag: bool = False) -> None:
             if saveflag:
                 with open("opt_hf_new.txt", "a") as f:
                     for var in x:
                         f.write("{:.9f},".format(var))
                     f.write("\n")
-            print("Current iteration parameters:", x, "Infidelity:", self._avg_fidelity_TO(x))
-            print(f"overwrite protocol from {self.x_initial} to {x}")
-            self._setup_protocol_TO(x)
+            print("Current iteration parameters:", x, "Infidelity:", cache.get('last_val', '?'))
 
         bounds = (
             (-np.pi, np.pi),
@@ -1753,14 +1865,14 @@ class CZGateSimulator:
             (-np.pi, np.pi),
         )
         optimres = minimize(
-            fun=self._avg_fidelity_TO,
+            fun=objective,
             x0=x,
             method="Nelder-Mead",
             options={"disp": True, "fatol": 1e-9},
             bounds=bounds,
             callback=callback_func,
         )
-        print(f"The final optimized protocol is: {self.x_initial}, with infidelity: {self._avg_fidelity_TO(self.x_initial)}")
+        print(f"The final optimized protocol is: {optimres.x.tolist()}, with infidelity: {optimres.fun}")
         return optimres
 
     def _diagnose_run_TO(
@@ -1786,14 +1898,16 @@ class CZGateSimulator:
             raise ValueError(f"Unsupported initial state: '{initial}'")
         ini_state = sss_states[initial]
 
+        t_gate = x[5] * self.time_scale
         # res_list[:, t] stores state at time t_gate * t/999
         res_list = self._get_gate_result_TO(
             phase_amp=x[0],
             omega=x[1] * self.rabi_eff,
             phase_init=x[2],
             delta=x[3] * self.rabi_eff,
-            t_gate=x[5] * self.time_scale,
+            t_gate=t_gate,
             state_mat=ini_state,
+            t_eval=np.linspace(0, t_gate, 1000),
         )
 
         mid_state_occ_oper = (
@@ -1911,13 +2025,15 @@ class CZGateSimulator:
         ylist = []
 
         ini_state = basis_01
+        t_gate = x[5] * self.time_scale
         res = self._get_gate_result_TO(
             phase_amp=x[0],
             omega=x[1] * self.rabi_eff,
             phase_init=x[2],
             delta=x[3] * self.rabi_eff,
-            t_gate=x[5] * self.time_scale,
+            t_gate=t_gate,
             state_mat=ini_state,
+            t_eval=np.linspace(0, t_gate, 1000),
         )
 
         for t in range(len(res[0, :])):
@@ -1966,8 +2082,9 @@ class CZGateSimulator:
             omega=x[1] * self.rabi_eff,
             phase_init=x[2],
             delta=x[3] * self.rabi_eff,
-            t_gate=x[5] * self.time_scale,
+            t_gate=t_gate,
             state_mat=ini_state,
+            t_eval=np.linspace(0, t_gate, 1000),
         )
 
         for t in range(len(res[0, :])):
@@ -2010,6 +2127,7 @@ class CZGateSimulator:
         delta: float,
         t_gate: float,
         state_mat: NDArray[np.complexfloating],
+        t_eval: NDArray[np.floating] | None = None,
     ) -> NDArray[np.complexfloating]:
         """Evolve quantum state under Amplitude-Robust pulse protocol.
 
@@ -2034,12 +2152,18 @@ class CZGateSimulator:
             Total gate duration (seconds).
         state_mat : ndarray
             Initial state vector of shape (49,).
+        t_eval : ndarray or None, optional
+            Times at which to store the solution. If None, only the final
+            state is returned as a 1-D array of shape (49,).
 
         Returns
         -------
         ndarray
-            State evolution array of shape (49, 1000).
+            If t_eval is provided: shape (49, len(t_eval)).
+            If t_eval is None: shape (49,) — the final state only.
         """
+        # Precompute static Hamiltonian (folds 1013 into const)
+        ham_static = self.tq_ham_const + self.tq_ham_1013 + self.tq_ham_1013_conj
 
         def fun(
             t: float,
@@ -2064,30 +2188,31 @@ class CZGateSimulator:
             amplitude = blackman_pulse(t, self.t_rise, t_gate) if self.blackmanflag else 1
 
             ham_tq_mat = (
-                self.tq_ham_const
+                ham_static
                 + amplitude * phase_420 * self.tq_ham_420
                 + amplitude * phase_420_conj * self.tq_ham_420_conj
-                + self.tq_ham_1013
-                + self.tq_ham_1013_conj
             )
-            diff = -1j * ham_tq_mat
-            y_arr = np.reshape(np.array(y), (-1, 1))
-            return np.reshape(np.matmul(diff, y_arr), (-1))
+            return -1j * ham_tq_mat @ y
 
         args = (omega, phase_init1, phase_amp1, phase_init2, phase_amp2, delta, t_gate)
         t_span = [0, t_gate]
-        t_eval = np.linspace(0, t_gate, 1000)
-        result = integrate.solve_ivp(
-            fun,
-            t_span,
-            state_mat,
-            t_eval=t_eval,
-            args=args,
+        solve_kwargs = dict(
             method="DOP853",
             rtol=1e-8,
             atol=1e-12,
         )
-        return np.array(result.y)
+        if t_eval is not None:
+            solve_kwargs["t_eval"] = t_eval
+        result = integrate.solve_ivp(
+            fun,
+            t_span,
+            state_mat,
+            args=args,
+            **solve_kwargs,
+        )
+        if t_eval is not None:
+            return np.array(result.y)
+        return np.array(result.y[:, -1])
 
     def _avg_fidelity_AR(self, x: list[float]) -> float:
         """Calculate average gate infidelity for AR parameters.
@@ -2117,7 +2242,7 @@ class CZGateSimulator:
             delta=x[5] * self.rabi_eff,
             t_gate=x[6] * self.time_scale,
             state_mat=ini_state,
-        )[:, -1]
+        )
         a01 = np.exp(-1.0j * theta) * ini_state.conj().dot(res.T)
 
         # Compute |11⟩ overlap
@@ -2133,7 +2258,7 @@ class CZGateSimulator:
             delta=x[5] * self.rabi_eff,
             t_gate=x[6] * self.time_scale,
             state_mat=ini_state,
-        )[:, -1]
+        )
         a11 = np.exp(-2.0j * theta - 1.0j * np.pi) * ini_state.conj().dot(res.T)
 
         # Average gate fidelity
@@ -2142,7 +2267,7 @@ class CZGateSimulator:
         )
         return 1 - avg_F
 
-    def _optimization_AR(self, x: list[float] | None = None) -> object:
+    def _optimization_AR(self, x: list[float] | None = None, fid_type: str = "average") -> object:
         """Run Nelder-Mead optimization for AR pulse parameters.
 
         Parameters
@@ -2150,6 +2275,8 @@ class CZGateSimulator:
         x : list of float, optional
             Initial guess [ω/Ω_eff, A₁, φ₁, A₂, φ₂, δ/Ω_eff, T/T_scale, θ].
             If None, uses stored parameters.
+        fid_type : str
+            Fidelity metric passed to :meth:`gate_fidelity`.
 
         Returns
         -------
@@ -2161,13 +2288,20 @@ class CZGateSimulator:
         else:
             print(f"AR parameters is overwritten to: [ω/Ω_eff, A₁, φ₁, A₂, φ₂, δ/Ω_eff, T/T_scale, θ] = {x}")
 
+        cache = {}
+
+        def objective(x):
+            val = self.gate_fidelity(x, fid_type=fid_type)
+            cache['last_val'] = val
+            return val
+
         def callback_func(x: list[float], saveflag: bool = False) -> None:
             if saveflag:
                 with open("opt_hf_new.txt", "a") as f:
                     for var in x:
                         f.write("{:.9f},".format(var))
                     f.write("\n")
-            print("Current iteration parameters:", x, "Infidelity:", self._avg_fidelity_AR(x))
+            print("Current iteration parameters:", x, "Infidelity:", cache.get('last_val', '?'))
             print(f"overwrite protocol from {self.x_initial} to {x}")
             self._setup_protocol_AR(x)
 
@@ -2182,14 +2316,14 @@ class CZGateSimulator:
             (-np.pi, np.pi),
         )
         optimres = minimize(
-            fun=self._avg_fidelity_AR,
+            fun=objective,
             x0=x,
             method="Nelder-Mead",
             options={"disp": True, "fatol": 1e-9},
             bounds=bounds,
             callback=callback_func,
         )
-        print(f"The final optimized protocol is: {self.x_initial}, with infidelity: {self._avg_fidelity_AR(self.x_initial)}")
+        print(f"The final optimized protocol is: {optimres.x.tolist()}, with infidelity: {optimres.fun}")
         return optimres
 
     def _diagnose_run_AR(
@@ -2215,6 +2349,7 @@ class CZGateSimulator:
             raise ValueError(f"Unsupported initial state: '{initial}'")
         ini_state = sss_states[initial]
 
+        t_gate = x[6] * self.time_scale
         # res_list[:, t] stores state at time t_gate * t/999
         res_list = self._get_gate_result_AR(
             omega=x[0] * self.rabi_eff,
@@ -2223,8 +2358,9 @@ class CZGateSimulator:
             phase_amp2=x[3],
             phase_init2=x[4],
             delta=x[5] * self.rabi_eff,
-            t_gate=x[6] * self.time_scale,
+            t_gate=t_gate,
             state_mat=ini_state,
+            t_eval=np.linspace(0, t_gate, 1000),
         )
 
         mid_state_occ_oper = (

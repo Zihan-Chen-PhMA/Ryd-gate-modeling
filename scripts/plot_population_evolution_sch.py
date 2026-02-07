@@ -51,7 +51,7 @@ def run_schrodinger():
     infidelities : ndarray, shape (12,)
         Infidelity 1 - F for each SSS initial state.
     """
-    sim = CZGateSimulator(decayflag=False, param_set='our', strategy='TO',
+    sim = CZGateSimulator(param_set='our', strategy='TO',
                           blackmanflag=False)
     sim.setup_protocol(X_TO)
 

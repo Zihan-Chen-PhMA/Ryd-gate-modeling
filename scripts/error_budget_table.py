@@ -131,7 +131,7 @@ def run_error_budget(param_set, detuning_sign, x, T2_star, mc_shots, label):
     """Run full error budget for one configuration.
 
     Uses CZGateSimulator methods directly: diagnose_run(), _decay_integrate(),
-    avg_fidelity(), and run_monte_carlo_simulation().
+    gate_fidelity(), and run_monte_carlo_simulation().
     """
     print(f"\n{'='*60}")
     print(f"  {label}")
@@ -139,11 +139,13 @@ def run_error_budget(param_set, detuning_sign, x, T2_star, mc_shots, label):
 
     # --- Create simulators ---
     sim_decay = CZGateSimulator(
-        decayflag=True, param_set=param_set, strategy="TO",
+        param_set=param_set, strategy="TO",
         blackmanflag=False, detuning_sign=detuning_sign,
+        enable_rydberg_decay=True, enable_intermediate_decay=True,
+        enable_polarization_leakage=True,
     )
     sim_nodecay = CZGateSimulator(
-        decayflag=False, param_set=param_set, strategy="TO",
+        param_set=param_set, strategy="TO",
         blackmanflag=False, detuning_sign=detuning_sign,
     )
 
@@ -208,8 +210,8 @@ def run_error_budget(param_set, detuning_sign, x, T2_star, mc_shots, label):
 
     # --- Cross-check: decay vs no-decay infidelity ---
     print("  Computing cross-check...")
-    infidelity_decay = sim_decay.avg_fidelity(x)
-    infidelity_nodecay = sim_nodecay.avg_fidelity(x)
+    infidelity_decay = sim_decay.gate_fidelity(x)
+    infidelity_nodecay = sim_nodecay.gate_fidelity(x)
     scattering_sum = P_mid_avg + P_ryd_avg
 
     # Format and print
@@ -264,7 +266,7 @@ def main():
                 if args.optimize:
                     print(f"\n  Optimizing TO protocol for lukin/{sign_label}...")
                     sim_opt = CZGateSimulator(
-                        decayflag=False, param_set=ps, strategy="TO",
+                        param_set=ps, strategy="TO",
                         blackmanflag=False, detuning_sign=sign,
                     )
                     x0 = X_TO_OUR_BRIGHT if sign == 1 else X_TO_OUR_DARK

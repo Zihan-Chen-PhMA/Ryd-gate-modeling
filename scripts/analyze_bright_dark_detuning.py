@@ -79,7 +79,7 @@ def compute_infidelity(sim, ini_state, x_params):
         delta=x_params[3] * sim.rabi_eff,
         t_gate=t_gate,
         state_mat=ini_state,
-    )[:, -1]
+    )
 
     c00 = np.vdot(state_00, ini_state)
     c01 = np.vdot(state_01, ini_state)
@@ -95,8 +95,15 @@ def compute_infidelity(sim, ini_state, x_params):
     return 1.0 - fid
 
 
-def analyze_detuning(detuning_sign, decayflag):
+def analyze_detuning(detuning_sign, enable_decay=False):
     """Run analysis for a given detuning sign.
+
+    Parameters
+    ----------
+    detuning_sign : {+1, -1}
+        Sign of intermediate detuning.
+    enable_decay : bool
+        Whether to enable Rydberg/intermediate decay and polarization leakage.
 
     Returns
     -------
@@ -111,11 +118,13 @@ def analyze_detuning(detuning_sign, decayflag):
     x_params = X_TO if detuning_sign == 1 else X_TO_DARK
 
     sim = CZGateSimulator(
-        decayflag=decayflag,
         param_set='our',
         strategy='TO',
         blackmanflag=False,
         detuning_sign=detuning_sign,
+        enable_rydberg_decay=enable_decay,
+        enable_intermediate_decay=enable_decay,
+        enable_polarization_leakage=enable_decay,
     )
 
     t_gate = x_params[5] * sim.time_scale
@@ -302,16 +311,16 @@ def main():
     print("=" * 60)
 
     print("\n[1/4] Analyzing bright detuning (Δ > 0) without decay...")
-    bright_nodecay = analyze_detuning(detuning_sign=+1, decayflag=False)
+    bright_nodecay = analyze_detuning(detuning_sign=+1, enable_decay=False)
 
     print("[2/4] Analyzing dark detuning (Δ < 0) without decay...")
-    dark_nodecay = analyze_detuning(detuning_sign=-1, decayflag=False)
+    dark_nodecay = analyze_detuning(detuning_sign=-1, enable_decay=False)
 
     print("[3/4] Analyzing bright detuning (Δ > 0) with decay...")
-    bright_decay = analyze_detuning(detuning_sign=+1, decayflag=True)
+    bright_decay = analyze_detuning(detuning_sign=+1, enable_decay=True)
 
     print("[4/4] Analyzing dark detuning (Δ < 0) with decay...")
-    dark_decay = analyze_detuning(detuning_sign=-1, decayflag=True)
+    dark_decay = analyze_detuning(detuning_sign=-1, enable_decay=True)
 
     print("\n" + "=" * 60)
     print("Results Summary")

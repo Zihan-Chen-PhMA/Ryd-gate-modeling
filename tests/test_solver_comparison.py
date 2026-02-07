@@ -37,13 +37,17 @@ from ryd_gate.full_error_model import jax_atom_Evolution
 @pytest.fixture(scope="module")
 def schrodinger_sim():
     """Schrödinger solver with decay disabled for comparison."""
-    return CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+    return CZGateSimulator(param_set="our", strategy="TO")
 
 
 @pytest.fixture(scope="module")
 def schrodinger_sim_decay():
     """Schrödinger solver with decay enabled."""
-    return CZGateSimulator(decayflag=True, param_set="our", strategy="TO")
+    return CZGateSimulator(
+        param_set="our", strategy="TO",
+        enable_rydberg_decay=True, enable_intermediate_decay=True,
+        enable_polarization_leakage=True,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -279,13 +283,15 @@ class TestSchrodingerProperties:
             [0, 1+0j, 0, 0, 0, 0, 0]
         )
 
+        t_eval = np.linspace(0, schrodinger_sim.time_scale, 1000)
         result = schrodinger_sim._get_gate_result_TO(
             phase_amp=0.1,
             omega=schrodinger_sim.rabi_eff,
             phase_init=0.0,
             delta=0.0,
             t_gate=schrodinger_sim.time_scale,
-            state_mat=ini_state
+            state_mat=ini_state,
+            t_eval=t_eval,
         )
 
         # Check at multiple time points
@@ -301,13 +307,15 @@ class TestSchrodingerProperties:
             [0, 1+0j, 0, 0, 0, 0, 0]
         )
 
+        t_eval = np.linspace(0, schrodinger_sim_decay.time_scale, 1000)
         result = schrodinger_sim_decay._get_gate_result_TO(
             phase_amp=0.1,
             omega=schrodinger_sim_decay.rabi_eff,
             phase_init=0.0,
             delta=0.0,
             t_gate=schrodinger_sim_decay.time_scale,
-            state_mat=ini_state
+            state_mat=ini_state,
+            t_eval=t_eval,
         )
 
         norm_start = np.linalg.norm(result[:, 0])
@@ -392,13 +400,15 @@ class TestPopulationDynamicsComparison:
         t_gate_us = 0.2  # 200 ns in μs
 
         # Schrödinger evolution
+        t_eval_sch = np.linspace(0, t_gate_us * 1e-6, 1000)
         result_sch = schrodinger_sim._get_gate_result_TO(
             phase_amp=0.1,
             omega=schrodinger_sim.rabi_eff,
             phase_init=0.0,
             delta=0.0,
             t_gate=t_gate_us * 1e-6,  # Convert to seconds
-            state_mat=ini_state_sch
+            state_mat=ini_state_sch,
+            t_eval=t_eval_sch,
         )
 
         # DM evolution
@@ -432,13 +442,15 @@ class TestPopulationDynamicsComparison:
         t_gate_us = 0.2
 
         # Schrödinger evolution
+        t_eval_sch = np.linspace(0, t_gate_us * 1e-6, 1000)
         result_sch = schrodinger_sim._get_gate_result_TO(
             phase_amp=0.1,
             omega=schrodinger_sim.rabi_eff,
             phase_init=0.0,
             delta=0.0,
             t_gate=t_gate_us * 1e-6,
-            state_mat=ini_state_sch
+            state_mat=ini_state_sch,
+            t_eval=t_eval_sch,
         )
 
         # DM evolution
@@ -523,7 +535,7 @@ class TestFidelityComparison:
     def test_schrodinger_fidelity_bounds(self, schrodinger_sim):
         """Schrödinger fidelity should always be between 0 and 1."""
         x_to = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        infid_sch = schrodinger_sim.avg_fidelity(x_to)
+        infid_sch = schrodinger_sim.gate_fidelity(x_to)
         fid_sch = 1 - infid_sch
 
         assert 0 <= fid_sch <= 1, f"Schrödinger fidelity out of bounds: {fid_sch}"

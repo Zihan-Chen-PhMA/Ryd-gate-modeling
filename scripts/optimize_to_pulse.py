@@ -87,7 +87,6 @@ Examples:
     print(f"Initial guess: {x0}")
 
     sim = CZGateSimulator(
-        decayflag=False,
         param_set=args.param_set,
         strategy='TO',
         blackmanflag=False,
@@ -112,7 +111,7 @@ Examples:
     print("="*60)
 
     # Report final infidelity using stored (optimized) params
-    final_infidelity = sim.avg_fidelity()
+    final_infidelity = sim.gate_fidelity()
 
     # Prepare output
     output = {

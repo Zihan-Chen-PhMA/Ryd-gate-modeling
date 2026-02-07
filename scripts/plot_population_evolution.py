@@ -79,7 +79,7 @@ def run_schrodinger():
         Population for each (state, category, timestep).
     time_ns : ndarray, shape (1000,)
     """
-    sim = CZGateSimulator(decayflag=False, param_set='our', strategy='TO',
+    sim = CZGateSimulator(param_set='our', strategy='TO',
                           blackmanflag=False)
     t_gate = X_TO[5] * sim.time_scale  # seconds
     time_ns = np.linspace(0, t_gate * 1e9, 1000)
@@ -102,6 +102,7 @@ def run_schrodinger():
             delta=X_TO[3] * sim.rabi_eff,
             t_gate=t_gate,
             state_mat=ini,
+            t_eval=np.linspace(0, t_gate, n_t),
         )  # shape (49, 1000)
 
         for c, op in enumerate(ops):

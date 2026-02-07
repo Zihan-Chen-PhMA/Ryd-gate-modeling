@@ -223,10 +223,10 @@ def main():
     # Initialize simulator (also inherited by forked worker processes)
     global _worker_sim
     print("\nInitializing CZGateSimulator...")
-    sim = CZGateSimulator(decayflag=False, param_set='our', strategy='TO', blackmanflag=False)
+    sim = CZGateSimulator(param_set='our', strategy='TO', blackmanflag=False)
     _worker_sim = sim
 
-    ideal_infidelity = sim.avg_fidelity(X_TO)
+    ideal_infidelity = sim.gate_fidelity(X_TO)
     ideal_fidelity = 1 - ideal_infidelity
     print(f"Ideal gate infidelity: {ideal_infidelity:.6f}")
     print(f"Ideal gate fidelity: {ideal_fidelity:.6f}")

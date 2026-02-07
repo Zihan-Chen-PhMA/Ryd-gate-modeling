@@ -16,7 +16,7 @@ class TestCZGateSimulatorInit:
         """CZGateSimulator should instantiate with 'our' params and TO strategy."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         assert sim.param_set == "our"
         assert sim.strategy == "TO"
         assert sim.ryd_level == 70
@@ -25,7 +25,7 @@ class TestCZGateSimulatorInit:
         """CZGateSimulator should instantiate with 'our' params and AR strategy."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        sim = CZGateSimulator(param_set="our", strategy="AR")
         assert sim.param_set == "our"
         assert sim.strategy == "AR"
 
@@ -33,7 +33,7 @@ class TestCZGateSimulatorInit:
         """CZGateSimulator should instantiate with 'lukin' params."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="lukin", strategy="TO")
+        sim = CZGateSimulator(param_set="lukin", strategy="TO")
         assert sim.param_set == "lukin"
         assert sim.ryd_level == 53
 
@@ -41,7 +41,7 @@ class TestCZGateSimulatorInit:
         """CZGateSimulator should instantiate with 'lukin' params and AR strategy."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="lukin", strategy="AR")
+        sim = CZGateSimulator(param_set="lukin", strategy="AR")
         assert sim.param_set == "lukin"
         assert sim.strategy == "AR"
 
@@ -49,7 +49,12 @@ class TestCZGateSimulatorInit:
         """CZGateSimulator should instantiate with decay enabled."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=True, param_set="our")
+        sim = CZGateSimulator(
+            param_set="our",
+            enable_rydberg_decay=True,
+            enable_intermediate_decay=True,
+            enable_polarization_leakage=True,
+        )
         assert sim.param_set == "our"
         # Decay should affect the constant Hamiltonian (adds imaginary parts)
         assert np.any(np.imag(sim.tq_ham_const) != 0)
@@ -58,7 +63,7 @@ class TestCZGateSimulatorInit:
         """CZGateSimulator with decay disabled should have real diagonal."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our")
+        sim = CZGateSimulator(param_set="our")
         # Without decay, diagonal should be purely real
         diagonal = np.diag(sim.tq_ham_const)
         assert np.allclose(np.imag(diagonal), 0)
@@ -68,13 +73,13 @@ class TestCZGateSimulatorInit:
         from ryd_gate.ideal_cz import CZGateSimulator
 
         with pytest.raises(ValueError, match="Unknown parameter set"):
-            CZGateSimulator(decayflag=False, param_set="invalid")
+            CZGateSimulator(param_set="invalid")
 
     def test_invalid_strategy_in_optimize(self):
         """optimize() should raise ValueError for invalid strategy."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         sim.strategy = "INVALID"  # Force invalid strategy
         with pytest.raises(ValueError, match="Unknown strategy"):
             sim.optimize([0.1, 1.0, 0.0, 0.0, 0.0, 1.0])
@@ -83,14 +88,14 @@ class TestCZGateSimulatorInit:
         """CZGateSimulator should respect blackmanflag=True."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, blackmanflag=True)
+        sim = CZGateSimulator(blackmanflag=True)
         assert sim.blackmanflag is True
 
     def test_blackman_flag_false(self):
         """CZGateSimulator should respect blackmanflag=False."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, blackmanflag=False)
+        sim = CZGateSimulator(blackmanflag=False)
         assert sim.blackmanflag is False
 
 
@@ -106,28 +111,28 @@ class TestHamiltonianConstruction:
         """Constant Hamiltonian should have shape (49, 49)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False)
+        sim = CZGateSimulator()
         assert sim.tq_ham_const.shape == (49, 49)
 
     def test_ham_420_shape(self):
         """420nm Hamiltonian should have shape (49, 49)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False)
+        sim = CZGateSimulator()
         assert sim.tq_ham_420.shape == (49, 49)
 
     def test_ham_1013_shape(self):
         """1013nm Hamiltonian should have shape (49, 49)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False)
+        sim = CZGateSimulator()
         assert sim.tq_ham_1013.shape == (49, 49)
 
     def test_ham_const_hermitian_no_decay(self):
-        """Constant Hamiltonian should be Hermitian when decayflag=False."""
+        """Constant Hamiltonian should be Hermitian when all decay flags are off."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False)
+        sim = CZGateSimulator()
         # Hermitian: H = H†
         assert np.allclose(sim.tq_ham_const, sim.tq_ham_const.conj().T)
 
@@ -135,7 +140,7 @@ class TestHamiltonianConstruction:
         """420nm Hamiltonian should couple ground to intermediate states."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our")
+        sim = CZGateSimulator(param_set="our")
         # Check that |1⟩ → |e⟩ coupling exists (index 1 → 2,3,4 in single atom)
         # In two-atom space, this appears in specific matrix elements
         assert not np.allclose(sim.tq_ham_420, 0)
@@ -144,7 +149,7 @@ class TestHamiltonianConstruction:
         """Occupation operator should have shape (49, 49)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False)
+        sim = CZGateSimulator()
         occ_op = sim._occ_operator(0)
         assert occ_op.shape == (49, 49)
 
@@ -152,7 +157,7 @@ class TestHamiltonianConstruction:
         """Occupation operator trace should be 2*7=14 (both atoms, 7 levels each)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False)
+        sim = CZGateSimulator()
         occ_op = sim._occ_operator(0)
         # |0⟩ appears in 7 states for atom 1 (0X) and 7 states for atom 2 (X0)
         # But |00⟩ is counted once, so trace = 7 + 7 - 0 = 14? No wait...
@@ -169,48 +174,48 @@ class TestFidelityCalculation:
     """Tests for average fidelity calculation."""
 
     def test_fidelity_TO_returns_float(self):
-        """avg_fidelity with TO strategy should return a float."""
+        """gate_fidelity with TO strategy should return a float."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        infid = sim.avg_fidelity(x)
+        infid = sim.gate_fidelity(x)
         assert isinstance(infid, (float, np.floating))
 
     def test_fidelity_AR_returns_float(self):
-        """avg_fidelity with AR strategy should return a float."""
+        """gate_fidelity with AR strategy should return a float."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        sim = CZGateSimulator(param_set="our", strategy="AR")
         x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
-        infid = sim.avg_fidelity(x)
+        infid = sim.gate_fidelity(x)
         assert isinstance(infid, (float, np.floating))
 
     def test_fidelity_bounded_TO(self):
         """Infidelity should be between 0 and 1 for TO strategy."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        infid = sim.avg_fidelity(x)
+        infid = sim.gate_fidelity(x)
         assert 0 <= infid <= 1
 
     def test_fidelity_bounded_AR(self):
         """Infidelity should be between 0 and 1 for AR strategy."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        sim = CZGateSimulator(param_set="our", strategy="AR")
         x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
-        infid = sim.avg_fidelity(x)
+        infid = sim.gate_fidelity(x)
         assert 0 <= infid <= 1
 
     def test_fidelity_lukin_params(self):
         """Fidelity calculation should work with lukin params."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="lukin", strategy="TO")
+        sim = CZGateSimulator(param_set="lukin", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        infid = sim.avg_fidelity(x)
+        infid = sim.gate_fidelity(x)
         assert 0 <= infid <= 1
 
 
@@ -226,7 +231,7 @@ class TestStateEvolution:
         """_get_gate_result_TO should return array of shape (49, 1000)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         ini_state = np.kron(
             [0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
         )
@@ -237,6 +242,7 @@ class TestStateEvolution:
             delta=0.0,
             t_gate=sim.time_scale,
             state_mat=ini_state,
+            t_eval=np.linspace(0, sim.time_scale, 1000),
         )
         assert result.shape == (49, 1000)
 
@@ -244,7 +250,7 @@ class TestStateEvolution:
         """_get_gate_result_AR should return array of shape (49, 1000)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        sim = CZGateSimulator(param_set="our", strategy="AR")
         ini_state = np.kron(
             [0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
         )
@@ -257,6 +263,7 @@ class TestStateEvolution:
             delta=0.0,
             t_gate=sim.time_scale,
             state_mat=ini_state,
+            t_eval=np.linspace(0, sim.time_scale, 1000),
         )
         assert result.shape == (49, 1000)
 
@@ -264,7 +271,7 @@ class TestStateEvolution:
         """State norm should be preserved during evolution (no decay)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         ini_state = np.kron(
             [0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
         )
@@ -275,6 +282,7 @@ class TestStateEvolution:
             delta=0.0,
             t_gate=sim.time_scale,
             state_mat=ini_state,
+            t_eval=np.linspace(0, sim.time_scale, 1000),
         )
         # Check norm at several time points
         for t_idx in [0, 250, 500, 750, 999]:
@@ -294,7 +302,7 @@ class TestDiagnosticMethods:
         """diagnose_run with TO should return list of 3 arrays."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         result = sim.diagnose_run(x, "11")
         assert len(result) == 3
@@ -304,7 +312,7 @@ class TestDiagnosticMethods:
         """diagnose_run with AR should return list of 3 arrays."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        sim = CZGateSimulator(param_set="our", strategy="AR")
         x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
         result = sim.diagnose_run(x, "11")
         assert len(result) == 3
@@ -314,7 +322,7 @@ class TestDiagnosticMethods:
         """diagnose_run arrays should have length 1000."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         mid_pop, ryd_pop, ryd_garb_pop = sim.diagnose_run(x, "11")
         assert len(mid_pop) == 1000
@@ -325,7 +333,7 @@ class TestDiagnosticMethods:
         """All population values should be non-negative."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         mid_pop, ryd_pop, ryd_garb_pop = sim.diagnose_run(x, "11")
         assert np.all(mid_pop >= 0)
@@ -336,7 +344,7 @@ class TestDiagnosticMethods:
         """diagnose_run should raise ValueError for invalid initial state."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         with pytest.raises(ValueError, match="Unsupported initial state"):
             sim.diagnose_run(x, "invalid")
@@ -345,7 +353,7 @@ class TestDiagnosticMethods:
         """diagnose_run should work for all valid initial states."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         for initial in ["00", "01", "10", "11"]:
             result = sim.diagnose_run(x, initial)
@@ -364,14 +372,14 @@ class TestStoredParameterWorkflow:
         """x_initial should be None before setup_protocol is called."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         assert sim.x_initial is None
 
     def test_setup_protocol_TO_stores_params(self):
         """setup_protocol should store TO parameters as x_initial."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         sim.setup_protocol(x)
         assert sim.x_initial == x
@@ -380,7 +388,7 @@ class TestStoredParameterWorkflow:
         """setup_protocol should store AR parameters as x_initial."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        sim = CZGateSimulator(param_set="our", strategy="AR")
         x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
         sim.setup_protocol(x)
         assert sim.x_initial == x
@@ -389,7 +397,7 @@ class TestStoredParameterWorkflow:
         """setup_protocol should raise ValueError for wrong TO parameter count."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         with pytest.raises(ValueError, match="6 elements"):
             sim.setup_protocol([1, 2, 3])
 
@@ -397,34 +405,34 @@ class TestStoredParameterWorkflow:
         """setup_protocol should raise ValueError for wrong AR parameter count."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        sim = CZGateSimulator(param_set="our", strategy="AR")
         with pytest.raises(ValueError, match="8 elements"):
             sim.setup_protocol([1, 2, 3])
 
-    def test_avg_fidelity_no_params_raises(self):
-        """avg_fidelity() with no stored params should raise ValueError."""
+    def test_gate_fidelity_no_params_raises(self):
+        """gate_fidelity() with no stored params should raise ValueError."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         with pytest.raises(ValueError, match="No pulse parameters"):
-            sim.avg_fidelity()
+            sim.gate_fidelity()
 
-    def test_avg_fidelity_uses_stored_params(self):
-        """avg_fidelity() should use stored params and match explicit call."""
+    def test_gate_fidelity_uses_stored_params(self):
+        """gate_fidelity() should use stored params and match explicit call."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         sim.setup_protocol(x)
-        infid_explicit = sim.avg_fidelity(x)
-        infid_stored = sim.avg_fidelity()
+        infid_explicit = sim.gate_fidelity(x)
+        infid_stored = sim.gate_fidelity()
         assert infid_explicit == infid_stored
 
     def test_diagnose_run_stored_params(self):
         """diagnose_run with stored params should work via keyword arg."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         sim.setup_protocol(x)
         result = sim.diagnose_run(initial_state="11")
@@ -434,21 +442,21 @@ class TestStoredParameterWorkflow:
         """diagnose_run with AR strategy should support SSS states."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        sim = CZGateSimulator(param_set="our", strategy="AR")
         x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
         for i in range(12):
             result = sim.diagnose_run(x, f"SSS-{i}")
             assert len(result) == 3
 
-    def test_avg_fidelity_explicit_does_not_mutate(self):
-        """Passing explicit x to avg_fidelity should not change x_initial."""
+    def test_gate_fidelity_explicit_does_not_mutate(self):
+        """Passing explicit x to gate_fidelity should not change x_initial."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         x_stored = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         x_other = [0.2, 0.5, 0.1, 0.1, 0.1, 0.8]
         sim.setup_protocol(x_stored)
-        sim.avg_fidelity(x_other)
+        sim.gate_fidelity(x_other)
         assert sim.x_initial == x_stored
 
 
@@ -505,122 +513,13 @@ class TestMonteCarloSimulation:
         assert result.mean_fidelity == 0.99
         assert result.n_shots == 100
 
-    def test_run_monte_carlo_basic_TO(self):
-        """run_monte_carlo_simulation should run with TO strategy."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        result = sim.run_monte_carlo_simulation(x, n_shots=10, T2_star=3e-6, seed=42)
-
-        assert result.n_shots == 10
-        assert len(result.fidelities) == 10
-        assert 0 <= result.mean_fidelity <= 1
-        assert result.std_fidelity >= 0
-        assert result.detuning_samples is not None
-        assert len(result.detuning_samples) == 10
-
-    def test_run_monte_carlo_basic_AR(self):
-        """run_monte_carlo_simulation should run with AR strategy."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
-        x = [1.0, 0.5, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0]
-        result = sim.run_monte_carlo_simulation(x, n_shots=10, T2_star=3e-6, seed=42)
-
-        assert result.n_shots == 10
-        assert len(result.fidelities) == 10
-
-    def test_run_monte_carlo_t2_star_only(self):
-        """Monte Carlo with only T2* dephasing should produce detuning samples."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        result = sim.run_monte_carlo_simulation(
-            x, n_shots=50, T2_star=3e-6, temperature=None, seed=42
-        )
-
-        assert result.detuning_samples is not None
-        assert result.distance_samples is None
-        # Detuning samples should be non-zero with high probability
-        assert np.std(result.detuning_samples) > 0
-
-    def test_run_monte_carlo_position_only(self):
-        """Monte Carlo with only position fluctuations should produce distance samples."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        result = sim.run_monte_carlo_simulation(
-            x, n_shots=50, T2_star=None, temperature=15.0, trap_freq=50.0, seed=42
-        )
-
-        assert result.detuning_samples is None
-        assert result.distance_samples is not None
-        # Distance should fluctuate around nominal 3 μm
-        assert np.mean(result.distance_samples) == pytest.approx(3.0, rel=0.1)
-
-    def test_run_monte_carlo_both_error_sources(self):
-        """Monte Carlo with both error sources should produce both sample types."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        result = sim.run_monte_carlo_simulation(
-            x, n_shots=50, T2_star=3e-6, temperature=15.0, trap_freq=50.0, seed=42
-        )
-
-        assert result.detuning_samples is not None
-        assert result.distance_samples is not None
-
-    def test_run_monte_carlo_no_errors(self):
-        """Monte Carlo with no error sources should return consistent fidelity."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        result = sim.run_monte_carlo_simulation(
-            x, n_shots=10, T2_star=None, temperature=None, seed=42
-        )
-
-        # Without noise, all shots should give the same fidelity
-        assert result.std_fidelity == pytest.approx(0.0, abs=1e-10)
-        assert result.detuning_samples is None
-        assert result.distance_samples is None
-
-    def test_run_monte_carlo_sigma_pos_direct(self):
-        """Monte Carlo should accept sigma_pos directly instead of temperature."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        result = sim.run_monte_carlo_simulation(
-            x, n_shots=50, T2_star=None, sigma_pos=0.1, seed=42
-        )
-
-        assert result.distance_samples is not None
-        # With sigma_pos=0.1 μm, distances should be close to 3 μm
-        assert np.mean(result.distance_samples) == pytest.approx(3.0, rel=0.05)
-
-    def test_run_monte_carlo_reproducible(self):
-        """Monte Carlo with same seed should produce reproducible results."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-
-        result1 = sim.run_monte_carlo_simulation(x, n_shots=20, T2_star=3e-6, seed=123)
-        result2 = sim.run_monte_carlo_simulation(x, n_shots=20, T2_star=3e-6, seed=123)
-
-        np.testing.assert_array_equal(result1.fidelities, result2.fidelities)
-        np.testing.assert_array_equal(result1.detuning_samples, result2.detuning_samples)
-
     def test_run_monte_carlo_invalid_temp_without_trap_freq(self):
         """Monte Carlo should raise error if temperature is set without trap_freq."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", enable_position_error=True
+        )
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
 
         with pytest.raises(ValueError, match="trap_freq"):
@@ -632,7 +531,7 @@ class TestMonteCarloSimulation:
         """_compute_detuning_sigma should return sqrt(2)/T2* in rad/s."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         T2_star = 3e-6  # 3 μs
         sigma = sim._compute_detuning_sigma(T2_star)
 
@@ -643,7 +542,7 @@ class TestMonteCarloSimulation:
         """_compute_position_sigma should compute correct thermal position spread."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
 
         # Test with direct sigma_pos
         sigma = sim._compute_position_sigma(None, None, 0.1)
@@ -659,66 +558,13 @@ class TestMonteCarloSimulation:
         """_build_vdw_unit_operator should return correct shape and structure."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
+        sim = CZGateSimulator(param_set="our", strategy="TO")
         op = sim._build_vdw_unit_operator()
 
         assert op.shape == (49, 49)
         # Should be non-negative on diagonal
         assert np.all(np.diag(op) >= 0)
 
-    def test_hamiltonian_restored_after_mc(self):
-        """Hamiltonian should be restored after Monte Carlo simulation."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-
-        # Store original
-        original_ham = sim.tq_ham_const.copy()
-        original_v_ryd = sim.v_ryd
-
-        # Run MC
-        sim.run_monte_carlo_simulation(x, n_shots=20, T2_star=3e-6, seed=42)
-
-        # Verify restored
-        np.testing.assert_array_equal(sim.tq_ham_const, original_ham)
-        assert sim.v_ryd == original_v_ryd
-
-    def test_get_error_budget(self):
-        """get_error_budget should return complete error breakdown."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-
-        budget = sim.get_error_budget(
-            x, n_shots=20, T2_star=3e-6, temperature=15.0, trap_freq=50.0, seed=42
-        )
-
-        assert "ideal_infidelity" in budget
-        assert "T2_star_infidelity" in budget
-        assert "position_infidelity" in budget
-        assert "total_infidelity" in budget
-        assert "T2_star_contribution" in budget
-        assert "position_contribution" in budget
-
-        # Contributions should be approximately non-negative (errors add infidelity)
-        # With small sample sizes, statistical fluctuations can cause small negative values
-        assert budget["T2_star_contribution"] >= -1e-3  # Allow statistical fluctuations
-        assert budget["position_contribution"] >= -1e-3
-
-    def test_monte_carlo_lukin_params(self):
-        """Monte Carlo should work with lukin parameter set."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="lukin", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        result = sim.run_monte_carlo_simulation(
-            x, n_shots=10, T2_star=3e-6, temperature=15.0, trap_freq=50.0, seed=42
-        )
-
-        assert result.n_shots == 10
-        assert 0 <= result.mean_fidelity <= 1
 
 
 # ==================================================================
@@ -729,60 +575,144 @@ class TestMonteCarloSimulation:
 class TestMonteCarloJax:
     """Tests for GPU-accelerated JAX Monte Carlo simulation."""
 
-    def test_jax_mc_basic(self):
-        """run_monte_carlo_jax should run and return valid results."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        result = sim.run_monte_carlo_jax(x, n_shots=5, T2_star=3e-6, seed=42)
-
-        assert result.n_shots == 5
-        assert len(result.fidelities) == 5
-        assert 0 <= result.mean_fidelity <= 1
-        assert result.detuning_samples is not None
-
-    def test_jax_mc_no_errors(self):
-        """JAX MC with no noise should give consistent fidelity."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        result = sim.run_monte_carlo_jax(
-            x, n_shots=5, T2_star=None, temperature=None, seed=0
-        )
-
-        # Without noise, all shots identical
-        assert result.std_fidelity == pytest.approx(0.0, abs=1e-10)
-        assert result.detuning_samples is None
-        assert result.distance_samples is None
-
-    def test_jax_mc_matches_scipy(self):
-        """JAX MC should agree with SciPy MC for the same perturbations."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(
-            decayflag=False, param_set="our", strategy="TO", blackmanflag=False
-        )
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-
-        # No noise → deterministic → should match exactly
-        scipy_result = sim.run_monte_carlo_simulation(
-            x, n_shots=1, T2_star=None, temperature=None, seed=42
-        )
-        jax_result = sim.run_monte_carlo_jax(
-            x, n_shots=1, T2_star=None, temperature=None, seed=42
-        )
-
-        np.testing.assert_allclose(
-            jax_result.mean_infidelity, scipy_result.mean_infidelity, atol=1e-6
-        )
-
     def test_jax_mc_not_implemented_ar(self):
         """JAX MC should raise NotImplementedError for AR strategy."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(decayflag=False, param_set="our", strategy="AR")
+        sim = CZGateSimulator(param_set="our", strategy="AR")
         x = [1.0, 0.5, 0.0, 0.3, 0.0, 0.0, 1.0, 0.0]
         with pytest.raises(NotImplementedError):
             sim.run_monte_carlo_jax(x, n_shots=5, seed=0)
+
+
+# ==================================================================
+# TESTS FOR INDEPENDENT ERROR SOURCE FLAGS
+# ==================================================================
+
+
+class TestIndependentErrorFlags:
+    """Tests for the independent enable_* error source flags."""
+
+    def test_enable_rydberg_decay_only(self):
+        """Rydberg diagonal should have imaginary part, mid-state should not."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(param_set="our", enable_rydberg_decay=True)
+        diag = np.diag(sim.tq_ham_const)
+        # Single-atom index 5 → two-atom indices 5*7+j and i*7+5
+        # Rydberg states should have imaginary part
+        ryd_idx_5 = 5 * 7 + 0  # |r,0⟩
+        ryd_idx_5b = 0 * 7 + 5  # |0,r⟩
+        assert np.imag(diag[ryd_idx_5]) != 0
+        assert np.imag(diag[ryd_idx_5b]) != 0
+        # Intermediate states should NOT have imaginary part
+        mid_idx = 2 * 7 + 0  # |e1,0⟩
+        assert np.imag(diag[mid_idx]) == 0
+
+    def test_enable_intermediate_decay_only(self):
+        """Intermediate diagonal should have imaginary part, Rydberg should not."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(param_set="our", enable_intermediate_decay=True)
+        diag = np.diag(sim.tq_ham_const)
+        # Intermediate states should have imaginary part
+        mid_idx = 2 * 7 + 0  # |e1,0⟩
+        assert np.imag(diag[mid_idx]) != 0
+        # Rydberg states should NOT have imaginary part
+        ryd_idx = 5 * 7 + 0  # |r,0⟩
+        assert np.imag(diag[ryd_idx]) == 0
+
+    def test_polarization_leakage_disabled(self):
+        """With leakage disabled, state 6 should be far-detuned (large Zeeman shift)."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(param_set="our", enable_polarization_leakage=False)
+        # Zeeman shift should be very large to push |r'⟩ off-resonance
+        assert sim.ryd_zeeman_shift > 2 * np.pi * 1e9
+        # Hamiltonian should be Hermitian (no decay)
+        assert np.allclose(sim.tq_ham_const, sim.tq_ham_const.conj().T)
+
+    def test_polarization_leakage_enabled(self):
+        """With leakage enabled, garbage Rabi freqs should be nonzero."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(param_set="our", enable_polarization_leakage=True)
+        assert sim.rabi_420_garbage != 0.0
+        assert sim.rabi_1013_garbage != 0.0
+
+    def test_all_flags_off_hermitian_hamiltonian(self):
+        """All flags off should produce a purely real-diagonal, Hermitian Hamiltonian."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(param_set="our")
+        # No decay → diagonal should be purely real
+        diagonal = np.diag(sim.tq_ham_const)
+        assert np.allclose(np.imag(diagonal), 0)
+        # Hamiltonian should be Hermitian
+        assert np.allclose(sim.tq_ham_const, sim.tq_ham_const.conj().T)
+
+    def test_all_flags_off_perfect_gate(self):
+        """All flags off should give near-perfect gate (only residual mid-state)."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", blackmanflag=False,
+        )
+        # Optimized TO params (found with polarization leakage on, but state 6
+        # is far-detuned when leakage off, so gate is even better)
+        x = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
+        infidelity = sim.gate_fidelity(x)
+        assert infidelity < 5e-3, f"Infidelity {infidelity} too large for all-flags-off gate"
+
+    def test_all_flags_off_norm_preserved(self):
+        """All flags off should preserve state normalization (unitary evolution)."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(param_set="our", strategy="TO")
+        ini_state = np.kron(
+            [0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
+        )
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim._get_gate_result_TO(
+            phase_amp=x[0],
+            omega=x[1] * sim.rabi_eff,
+            phase_init=x[2],
+            delta=x[3] * sim.rabi_eff,
+            t_gate=x[5] * sim.time_scale,
+            state_mat=ini_state,
+        )
+        # Norm should be exactly 1 (no decay, no leakage loss)
+        final_norm = np.linalg.norm(result)
+        assert np.isclose(final_norm, 1.0, rtol=1e-6)
+
+    def test_dephasing_flag_gates_mc(self):
+        """MC with enable_rydberg_dephasing=False should ignore T2_star."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", enable_rydberg_dephasing=False
+        )
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_simulation(
+            x, n_shots=3, T2_star=3e-6, seed=42
+        )
+        # Dephasing disabled → detuning_samples should be None
+        assert result.detuning_samples is None
+        # All shots should have identical fidelity (no noise)
+        assert result.std_fidelity == pytest.approx(0.0, abs=1e-10)
+
+    def test_position_flag_gates_mc(self):
+        """MC with enable_position_error=False should ignore temperature."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", enable_position_error=False
+        )
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_simulation(
+            x, n_shots=3, T2_star=None, temperature=15.0, trap_freq=50.0, seed=42
+        )
+        # Position error disabled → distance_samples should be None
+        assert result.distance_samples is None
+        # All shots should have identical fidelity (no noise)
+        assert result.std_fidelity == pytest.approx(0.0, abs=1e-10)

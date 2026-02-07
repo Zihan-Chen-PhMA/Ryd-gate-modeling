@@ -55,11 +55,11 @@ sol = model.integrate_rho_jax(
 from ryd_gate.ideal_cz import CZGateSimulator
 import numpy as np
 
-sim = CZGateSimulator(decayflag=False, param_set='our', strategy='TO')
+sim = CZGateSimulator(param_set='our', strategy='TO')
 
 # Time-optimal pulse parameters
 X_TO = [0.1122, 1.0431, -0.72565603, 0.0, 0.452, 1.219096]
-infidelity = sim.avg_fidelity(X_TO)
+infidelity = sim.gate_fidelity(X_TO)
 print(f"Gate infidelity: {infidelity:.2e}")
 ```
 
