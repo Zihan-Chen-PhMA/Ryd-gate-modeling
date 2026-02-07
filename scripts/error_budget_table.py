@@ -14,8 +14,8 @@ Usage:
 
 Options:
     --param-set {our,lukin,both}   Parameter set (default: both)
-    --t2-star FLOAT                T2* in microseconds (default: 4.0)
-    --mc-shots INT                 Monte Carlo shots for T2* (default: 1000)
+    --sigma-detuning FLOAT         Detuning noise std in kHz (default: 170)
+    --mc-shots INT                 Monte Carlo shots for dephasing (default: 1000)
     --optimize                     Run optimization for param sets without cached params
     --output-dir DIR               Output directory (default: docs)
 """
@@ -127,7 +127,7 @@ def format_cross_check(infidelity_nodecay, infidelity_decay, scattering_sum, lab
 # Main
 # ======================================================================
 
-def run_error_budget(param_set, detuning_sign, x, T2_star, mc_shots, label):
+def run_error_budget(param_set, detuning_sign, x, sigma_detuning, mc_shots, label):
     """Run full error budget for one configuration.
 
     Uses CZGateSimulator methods directly: diagnose_run(), _decay_integrate(),
@@ -147,6 +147,12 @@ def run_error_budget(param_set, detuning_sign, x, T2_star, mc_shots, label):
     sim_nodecay = CZGateSimulator(
         param_set=param_set, strategy="TO",
         blackmanflag=False, detuning_sign=detuning_sign,
+    )
+    sim_dephasing = CZGateSimulator(
+        param_set=param_set, strategy="TO",
+        blackmanflag=False, detuning_sign=detuning_sign,
+        enable_rydberg_dephasing=True,
+        sigma_detuning=sigma_detuning,
     )
 
     # --- Decay constants from simulator attributes ---
@@ -198,15 +204,15 @@ def run_error_budget(param_set, detuning_sign, x, T2_star, mc_shots, label):
         "mj_total": P_mj_avg,
     }
 
-    # --- T2* dephasing via Monte Carlo ---
-    print(f"  Computing T2* dephasing (MC, {mc_shots} shots, T2*={T2_star*1e6:.1f} us)...")
-    result_no_t2 = sim_nodecay.run_monte_carlo_simulation(
-        x, n_shots=mc_shots, T2_star=None, temperature=None, seed=42,
+    # --- Dephasing via Monte Carlo ---
+    print(f"  Computing dephasing (MC, {mc_shots} shots, sigma_detuning={sigma_detuning/1e3:.1f} kHz)...")
+    result_no_deph = sim_nodecay.run_monte_carlo_simulation(
+        x, n_shots=mc_shots, seed=42,
     )
-    result_with_t2 = sim_nodecay.run_monte_carlo_simulation(
-        x, n_shots=mc_shots, T2_star=T2_star, temperature=None, seed=43,
+    result_with_deph = sim_dephasing.run_monte_carlo_simulation(
+        x, n_shots=mc_shots, sigma_detuning=sigma_detuning, seed=43,
     )
-    t2_xyz = max(result_with_t2.mean_infidelity - result_no_t2.mean_infidelity, 0.0)
+    t2_xyz = max(result_with_deph.mean_infidelity - result_no_deph.mean_infidelity, 0.0)
 
     # --- Cross-check: decay vs no-decay infidelity ---
     print("  Computing cross-check...")
@@ -233,12 +239,12 @@ def main():
         help="Parameter set (default: both)",
     )
     parser.add_argument(
-        "--t2-star", type=float, default=4.0,
-        help="T2* in microseconds (default: 4.0)",
+        "--sigma-detuning", type=float, default=170.0,
+        help="Detuning noise std in kHz (default: 170)",
     )
     parser.add_argument(
         "--mc-shots", type=int, default=1000,
-        help="Monte Carlo shots for T2* (default: 1000)",
+        help="Monte Carlo shots for dephasing (default: 1000)",
     )
     parser.add_argument(
         "--optimize", action="store_true",
@@ -250,7 +256,7 @@ def main():
     )
     args = parser.parse_args()
 
-    T2_star = args.t2_star * 1e-6  # Convert to seconds
+    sigma_detuning = args.sigma_detuning * 1e3  # Convert kHz to Hz
 
     param_sets = ["our", "lukin"] if args.param_set == "both" else [args.param_set]
     results = {}
@@ -277,7 +283,7 @@ def main():
                     print("  Run with --optimize to generate them, or use --param-set our.")
                     continue
 
-            result = run_error_budget(ps, sign, x, T2_star, args.mc_shots, label)
+            result = run_error_budget(ps, sign, x, sigma_detuning, args.mc_shots, label)
             results[(ps, sign_label)] = result
 
     # Save combined output
@@ -285,7 +291,7 @@ def main():
     outpath = os.path.join(args.output_dir, "error_budget_table.md")
     with open(outpath, "w") as f:
         f.write("# CZ Gate Simulated Error Budget\n\n")
-        f.write(f"T2* = {args.t2_star} μs, MC shots = {args.mc_shots}\n")
+        f.write(f"sigma_detuning = {args.sigma_detuning} kHz, MC shots = {args.mc_shots}\n")
         for key, res in results.items():
             f.write(res["table"])
             f.write("\n\n")

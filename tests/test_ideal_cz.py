@@ -513,46 +513,69 @@ class TestMonteCarloSimulation:
         assert result.mean_fidelity == 0.99
         assert result.n_shots == 100
 
-    def test_run_monte_carlo_invalid_temp_without_trap_freq(self):
-        """Monte Carlo should raise error if temperature is set without trap_freq."""
+    def test_constructor_requires_sigma_detuning_when_dephasing_enabled(self):
+        """Constructor should raise if enable_rydberg_dephasing=True without sigma_detuning."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        with pytest.raises(ValueError, match="sigma_detuning"):
+            CZGateSimulator(
+                param_set="our", strategy="TO",
+                enable_rydberg_dephasing=True,
+            )
+
+    def test_constructor_requires_sigma_pos_xyz_when_position_enabled(self):
+        """Constructor should raise if enable_position_error=True without sigma_pos_xyz."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        with pytest.raises(ValueError, match="sigma_pos_xyz"):
+            CZGateSimulator(
+                param_set="our", strategy="TO",
+                enable_position_error=True,
+            )
+
+    def test_gate_fidelity_returns_tuple_when_mc_enabled(self):
+        """gate_fidelity should return (mean, std) tuple when MC flags are on."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         sim = CZGateSimulator(
-            param_set="our", strategy="TO", enable_position_error=True
+            param_set="our", strategy="TO",
+            enable_rydberg_dephasing=True,
+            sigma_detuning=170e3,
+            n_mc_shots=3,
+            mc_seed=42,
         )
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.gate_fidelity(x)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        mean_inf, std_inf = result
+        assert isinstance(mean_inf, float)
+        assert isinstance(std_inf, float)
+        assert mean_inf >= 0
+        assert std_inf >= 0
 
-        with pytest.raises(ValueError, match="trap_freq"):
-            sim.run_monte_carlo_simulation(
-                x, n_shots=10, temperature=15.0, trap_freq=None, sigma_pos=None
-            )
-
-    def test_compute_detuning_sigma(self):
-        """_compute_detuning_sigma should return sqrt(2)/T2* in rad/s."""
+    def test_3d_position_model_distances(self):
+        """MC with 3D position model should produce positive distances."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(param_set="our", strategy="TO")
-        T2_star = 3e-6  # 3 μs
-        sigma = sim._compute_detuning_sigma(T2_star)
-
-        expected = np.sqrt(2) / T2_star
-        assert sigma == pytest.approx(expected)
-
-    def test_compute_position_sigma(self):
-        """_compute_position_sigma should compute correct thermal position spread."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(param_set="our", strategy="TO")
-
-        # Test with direct sigma_pos
-        sigma = sim._compute_position_sigma(None, None, 0.1)
-        assert sigma == 0.1
-
-        # Test with temperature and trap_freq
-        sigma = sim._compute_position_sigma(15.0, 50.0, None)
-        assert sigma > 0
-        # For T=15 μK, trap_freq=50 kHz, sigma should be ~0.05-0.1 μm
-        assert 0.01 < sigma < 0.5
+        # Use small sigma to keep distances near nominal (3.0 μm)
+        small_sigma = (0.05e-6, 0.05e-6, 0.05e-6)  # 50 nm in meters
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO",
+            enable_position_error=True,
+            sigma_pos_xyz=small_sigma,
+        )
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        result = sim.run_monte_carlo_simulation(
+            x, n_shots=10,
+            sigma_pos_xyz=small_sigma,
+            seed=42,
+        )
+        assert result.distance_samples is not None
+        # All distances should be positive and near nominal (3.0 μm)
+        assert np.all(result.distance_samples > 0)
+        assert np.all(result.distance_samples > 1.0)  # not unreasonably small
+        assert np.all(result.distance_samples < 10.0)  # not unreasonably large
 
     def test_build_vdw_unit_operator(self):
         """_build_vdw_unit_operator should return correct shape and structure."""
@@ -686,7 +709,7 @@ class TestIndependentErrorFlags:
         assert np.isclose(final_norm, 1.0, rtol=1e-6)
 
     def test_dephasing_flag_gates_mc(self):
-        """MC with enable_rydberg_dephasing=False should ignore T2_star."""
+        """MC with enable_rydberg_dephasing=False should ignore sigma_detuning."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         sim = CZGateSimulator(
@@ -694,7 +717,7 @@ class TestIndependentErrorFlags:
         )
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         result = sim.run_monte_carlo_simulation(
-            x, n_shots=3, T2_star=3e-6, seed=42
+            x, n_shots=3, sigma_detuning=170e3, seed=42
         )
         # Dephasing disabled → detuning_samples should be None
         assert result.detuning_samples is None
@@ -702,7 +725,7 @@ class TestIndependentErrorFlags:
         assert result.std_fidelity == pytest.approx(0.0, abs=1e-10)
 
     def test_position_flag_gates_mc(self):
-        """MC with enable_position_error=False should ignore temperature."""
+        """MC with enable_position_error=False should ignore sigma_pos_xyz."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         sim = CZGateSimulator(
@@ -710,7 +733,9 @@ class TestIndependentErrorFlags:
         )
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         result = sim.run_monte_carlo_simulation(
-            x, n_shots=3, T2_star=None, temperature=15.0, trap_freq=50.0, seed=42
+            x, n_shots=3,
+            sigma_pos_xyz=(70e-6, 70e-6, 170e-6),
+            seed=42,
         )
         # Position error disabled → distance_samples should be None
         assert result.distance_samples is None

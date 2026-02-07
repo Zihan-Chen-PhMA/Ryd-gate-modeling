@@ -24,7 +24,6 @@ from arc import Rubidium87
 from arc.wigner import CG
 from qutip import Bloch
 from scipy import integrate, interpolate
-from scipy.constants import k as kB
 from scipy.optimize import minimize
 
 from ryd_gate.blackman import blackman_pulse
@@ -213,6 +212,10 @@ class CZGateSimulator:
         enable_rydberg_dephasing: bool = False,
         enable_position_error: bool = False,
         enable_polarization_leakage: bool = False,
+        sigma_detuning: float | None = None,
+        sigma_pos_xyz: tuple[float, float, float] | None = None,
+        n_mc_shots: int = 100,
+        mc_seed: int | None = None,
     ) -> None:
         """Initialize the CZ gate simulator with specified parameters.
 
@@ -233,11 +236,25 @@ class CZGateSimulator:
         enable_intermediate_decay : bool
             Include intermediate state decay as imaginary energy shifts.
         enable_rydberg_dephasing : bool
-            Gate T2* dephasing noise in Monte Carlo simulations.
+            Enable Rydberg dephasing noise. When True, ``gate_fidelity()``
+            automatically runs Monte Carlo and returns ``(mean, std)``.
         enable_position_error : bool
-            Gate position fluctuation noise in Monte Carlo simulations.
+            Enable position fluctuation noise. When True, ``gate_fidelity()``
+            automatically runs Monte Carlo and returns ``(mean, std)``.
         enable_polarization_leakage : bool
             Include coupling to the unwanted Rydberg state |r'⟩.
+        sigma_detuning : float or None
+            Detuning noise standard deviation in Hz (e.g. 170e3 for 170 kHz).
+            Required when ``enable_rydberg_dephasing=True``.
+        sigma_pos_xyz : tuple of 3 floats or None
+            Position noise standard deviations ``(sigma_x, sigma_y, sigma_z)``
+            in meters, where x-axis connects both atoms.
+            E.g. ``(70e-6, 70e-6, 170e-6)``.
+            Required when ``enable_position_error=True``.
+        n_mc_shots : int, default=100
+            Number of Monte Carlo shots for automatic MC in ``gate_fidelity()``.
+        mc_seed : int or None
+            Random seed for Monte Carlo reproducibility.
         """
         self.param_set = param_set
         self.strategy = strategy
@@ -248,7 +265,22 @@ class CZGateSimulator:
         self.enable_rydberg_dephasing = enable_rydberg_dephasing
         self.enable_position_error = enable_position_error
         self.enable_polarization_leakage = enable_polarization_leakage
+        self.sigma_detuning = sigma_detuning
+        self.sigma_pos_xyz = sigma_pos_xyz
+        self.n_mc_shots = n_mc_shots
+        self.mc_seed = mc_seed
         self.x_initial: list[float] | None = None
+
+        if self.enable_rydberg_dephasing and self.sigma_detuning is None:
+            raise ValueError(
+                "sigma_detuning must be provided when enable_rydberg_dephasing=True. "
+                "Typical value: 170e3 (Hz)."
+            )
+        if self.enable_position_error and self.sigma_pos_xyz is None:
+            raise ValueError(
+                "sigma_pos_xyz must be provided when enable_position_error=True. "
+                "Typical value: (70e-6, 70e-6, 170e-6) (meters)."
+            )
 
         if param_set == "our":
             self._init_our_params()
@@ -498,35 +530,15 @@ class CZGateSimulator:
                 f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
             )
 
-    def gate_fidelity(
+    def _gate_infidelity_single(
         self,
-        x: list[float] | None = None,
+        x: list[float],
         fid_type: Literal["average", "sss", "bell"] = "average",
     ) -> float:
-        """Calculate average gate infidelity for given pulse parameters.
+        """Compute single-shot gate infidelity (no MC averaging).
 
-        Parameters
-        ----------
-        x : list of float, optional
-            Pulse parameters (format depends on strategy).
-            If None, uses parameters stored via setup_protocol().
-        fid_type : {'average', 'sss', 'bell'}, default='average'
-            Method for computing average gate fidelity:
-
-            - ``'average'`` — Nielsen closed-form formula using only |01⟩ and
-              |11⟩ overlaps. 2 ODE solves per call (fastest).
-            - ``'sss'`` — Average state infidelity over 12 symmetric
-              superposition states. 12 ODE solves per call.
-            - ``'bell'`` — Average state infidelity over 4 Bell states
-              (|Φ±⟩, |Ψ±⟩). 4 ODE solves per call.
-
-        Returns
-        -------
-        float
-            Average gate infidelity (1 - F), where F is the fidelity.
-            Value is bounded between 0 and 1.
+        This is the deterministic computation used per-shot by MC methods.
         """
-        x = self._resolve_params(x, "gate_fidelity")
         if self.strategy == "TO":
             if fid_type == "sss":
                 return self.fidelity_sss(x)
@@ -545,6 +557,50 @@ class CZGateSimulator:
         raise ValueError(
             f"Unknown fid_type: '{fid_type}'. Choose 'average', 'sss', or 'bell'."
         )
+
+    def gate_fidelity(
+        self,
+        x: list[float] | None = None,
+        fid_type: Literal["average", "sss", "bell"] = "average",
+    ) -> "float | tuple[float, float]":
+        """Calculate average gate infidelity for given pulse parameters.
+
+        When ``enable_rydberg_dephasing`` or ``enable_position_error`` is True,
+        this method automatically runs a Monte Carlo simulation and returns
+        ``(mean_infidelity, std_infidelity)``.
+
+        Parameters
+        ----------
+        x : list of float, optional
+            Pulse parameters (format depends on strategy).
+            If None, uses parameters stored via setup_protocol().
+        fid_type : {'average', 'sss', 'bell'}, default='average'
+            Method for computing average gate fidelity:
+
+            - ``'average'`` — Nielsen closed-form formula using only |01⟩ and
+              |11⟩ overlaps. 2 ODE solves per call (fastest).
+            - ``'sss'`` — Average state infidelity over 12 symmetric
+              superposition states. 12 ODE solves per call.
+            - ``'bell'`` — Average state infidelity over 4 Bell states
+              (|Φ±⟩, |Ψ±⟩). 4 ODE solves per call.
+
+        Returns
+        -------
+        float or tuple[float, float]
+            If no MC flags are enabled: average gate infidelity (1 - F).
+            If MC flags are enabled: ``(mean_infidelity, std_infidelity)``.
+        """
+        x = self._resolve_params(x, "gate_fidelity")
+        if self.enable_rydberg_dephasing or self.enable_position_error:
+            result = self.run_monte_carlo_simulation(
+                x,
+                n_shots=self.n_mc_shots,
+                sigma_detuning=self.sigma_detuning,
+                sigma_pos_xyz=self.sigma_pos_xyz,
+                seed=self.mc_seed,
+            )
+            return (result.mean_infidelity, result.std_infidelity)
+        return self._gate_infidelity_single(x, fid_type)
 
     def fidelity_sss(self, x: list[float]) -> float:
         """Average state infidelity over 12 SSS states."""
@@ -787,10 +843,8 @@ class CZGateSimulator:
         self,
         x: list[float],
         n_shots: int = 1000,
-        T2_star: float | None = 3e-6,
-        temperature: float | None = None,
-        trap_freq: float | None = None,
-        sigma_pos: float | None = None,
+        sigma_detuning: float | None = None,
+        sigma_pos_xyz: tuple[float, float, float] | None = None,
         seed: int | None = None,
     ) -> MonteCarloResult:
         """Run quasi-static Monte Carlo simulation for error budget analysis.
@@ -799,11 +853,10 @@ class CZGateSimulator:
         shots, following the methodology from arXiv:2305.03406 (Lukin group).
 
         This implements two key error sources:
-        1. **Doppler Dephasing (T2*)**: Gaussian-distributed detuning noise from
-           ground-Rydberg coherence limitations due to Doppler shifts and laser
-           phase noise.
-        2. **Interaction Fluctuations**: Position spread from finite atomic
-           temperature causes shot-to-shot variations in V_Ryd = C_6/R^6.
+        1. **Doppler Dephasing**: Gaussian-distributed detuning noise from
+           ground-Rydberg coherence limitations.
+        2. **Interaction Fluctuations**: 3D position spread causes
+           shot-to-shot variations in V_Ryd = C_6/R^6.
 
         Parameters
         ----------
@@ -811,92 +864,33 @@ class CZGateSimulator:
             Pulse parameters (format depends on strategy).
         n_shots : int, default=1000
             Number of Monte Carlo shots to perform.
-        T2_star : float or None, default=3e-6
-            Ground-Rydberg coherence time in seconds. Set to None to disable
-            Doppler dephasing. The default 3 μs matches the paper.
-            Detuning noise σ_δ ≈ √2/T2* (Gaussian decay profile).
-        temperature : float or None, default=None
-            Atomic temperature in μK. Set to None to disable position
-            fluctuations. Typical experimental value is 10-20 μK.
-        trap_freq : float or None, default=None
-            Trap frequency in kHz. Required if temperature is specified and
-            sigma_pos is not directly provided.
-        sigma_pos : float or None, default=None
-            Position spread standard deviation in μm. If provided, overrides
-            the calculation from temperature and trap_freq.
+        sigma_detuning : float or None
+            Detuning noise standard deviation in Hz (e.g. 170e3 for 170 kHz).
+            Set to None to disable dephasing.
+        sigma_pos_xyz : tuple of 3 floats or None
+            Position noise standard deviations ``(sigma_x, sigma_y, sigma_z)``
+            in meters, where x-axis connects both atoms.
+            Set to None to disable position fluctuations.
         seed : int or None, default=None
             Random seed for reproducibility.
 
         Returns
         -------
         MonteCarloResult
-            Dataclass containing:
-            - mean_fidelity: Average gate fidelity
-            - std_fidelity: Standard deviation of fidelity
-            - mean_infidelity: Average gate infidelity (1 - F)
-            - std_infidelity: Standard deviation of infidelity
-            - n_shots: Number of shots performed
-            - fidelities: Array of individual fidelities
-            - detuning_samples: Sampled detuning errors (if T2* enabled)
-            - distance_samples: Sampled distances (if position enabled)
-
-        Notes
-        -----
-        **Doppler Dephasing Model**:
-        Assumes a Gaussian decay profile exp(-(t/T2*)²) for the coherence,
-        which corresponds to Gaussian-distributed detuning noise with
-        σ_δ = √2 / T2* (in rad/s). For each shot, a random detuning
-        δ_err ~ N(0, σ_δ²) is added to the Rydberg state diagonal elements.
-
-        **Position Fluctuation Model**:
-        Atoms in a harmonic trap at temperature T have position spread
-        σ_pos = √(k_B T / (m ω²)). For each shot, independent displacements
-        δr_1, δr_2 ~ N(0, σ_pos²) are sampled, and the effective distance
-        R_new = R_0 + δr_1 - δr_2 is used to compute V_Ryd = C_6/R_new^6.
-
-        **Efficiency**:
-        The base Hamiltonian is reused; only shot-specific perturbations
-        (detuning and interaction strength) are recomputed per shot.
-
-        Examples
-        --------
-        Run with T2* dephasing only:
-
-        >>> sim = CZGateSimulator(strategy='TO')
-        >>> result = sim.run_monte_carlo_simulation(x_opt, n_shots=500, T2_star=3e-6)
-        >>> print(f"Mean fidelity: {result.mean_fidelity:.6f} ± {result.std_fidelity:.6f}")
-
-        Run with both error sources:
-
-        >>> result = sim.run_monte_carlo_simulation(
-        ...     x_opt, n_shots=1000, T2_star=3e-6, temperature=15.0, trap_freq=50.0
-        ... )
-
-        Disable T2* to isolate position fluctuation contribution:
-
-        >>> result = sim.run_monte_carlo_simulation(
-        ...     x_opt, n_shots=1000, T2_star=None, temperature=15.0, trap_freq=50.0
-        ... )
+            Dataclass containing mean/std fidelity and infidelity,
+            plus per-shot samples.
         """
-        # Validate inputs
-        if temperature is not None and trap_freq is None and sigma_pos is None:
-            raise ValueError(
-                "Either trap_freq or sigma_pos must be provided when temperature is set."
-            )
-
         # Initialize RNG
         rng = np.random.default_rng(seed)
 
         # Compute noise parameters (gated by enable flags)
-        sigma_delta = (
-            self._compute_detuning_sigma(T2_star)
-            if self.enable_rydberg_dephasing and T2_star
+        sigma_delta_rad = (
+            2 * np.pi * sigma_detuning
+            if self.enable_rydberg_dephasing and sigma_detuning is not None
             else None
         )
-        sigma_position = (
-            self._compute_position_sigma(temperature, trap_freq, sigma_pos)
-            if self.enable_position_error
-            else None
+        use_position = (
+            self.enable_position_error and sigma_pos_xyz is not None
         )
 
         # Store original Hamiltonian
@@ -906,10 +900,14 @@ class CZGateSimulator:
         # Pre-compute Rydberg interaction operator for efficient updates
         ham_vdw_unit = self._build_vdw_unit_operator()
 
+        # Convert position sigmas to μm (internal distance unit)
+        if use_position:
+            sx_um, sy_um, sz_um = [s * 1e6 for s in sigma_pos_xyz]
+
         # Storage for results
         fidelities = np.zeros(n_shots)
-        detuning_samples = np.zeros(n_shots) if sigma_delta else None
-        distance_samples = np.zeros(n_shots) if sigma_position else None
+        detuning_samples = np.zeros(n_shots) if sigma_delta_rad else None
+        distance_samples = np.zeros(n_shots) if use_position else None
 
         # Run Monte Carlo loop
         for shot in range(n_shots):
@@ -917,24 +915,33 @@ class CZGateSimulator:
             self.tq_ham_const = original_ham_const.copy()
             self.v_ryd = original_v_ryd
 
-            # Apply T2* dephasing (detuning noise)
-            if sigma_delta is not None:
-                delta_err = rng.normal(0, sigma_delta)
+            # Apply dephasing (detuning noise)
+            if sigma_delta_rad is not None:
+                delta_err = rng.normal(0, sigma_delta_rad)
                 detuning_samples[shot] = delta_err
                 self._apply_detuning_perturbation(delta_err)
 
-            # Apply position fluctuations
-            if sigma_position is not None:
-                delta_r1 = rng.normal(0, sigma_position)
-                delta_r2 = rng.normal(0, sigma_position)
-                d_new = self._get_nominal_distance() + delta_r1 - delta_r2
+            # Apply 3D position fluctuations
+            if use_position:
+                dx1 = rng.normal(0, sx_um)
+                dy1 = rng.normal(0, sy_um)
+                dz1 = rng.normal(0, sz_um)
+                dx2 = rng.normal(0, sx_um)
+                dy2 = rng.normal(0, sy_um)
+                dz2 = rng.normal(0, sz_um)
+                R0 = self._get_nominal_distance()  # μm
+                d_new = np.sqrt(
+                    (R0 + dx1 - dx2) ** 2
+                    + (dy1 - dy2) ** 2
+                    + (dz1 - dz2) ** 2
+                )
                 # Clamp to avoid pathological cases
                 d_new = max(d_new, 0.1)
                 distance_samples[shot] = d_new
                 self._apply_interaction_perturbation(d_new, ham_vdw_unit)
 
             # Compute fidelity for this shot
-            infidelity = self.gate_fidelity(x)
+            infidelity = self._gate_infidelity_single(x)
             fidelities[shot] = 1.0 - infidelity
 
         # Restore original state
@@ -961,10 +968,8 @@ class CZGateSimulator:
         self,
         x: list[float],
         n_shots: int = 1000,
-        T2_star: float | None = 3e-6,
-        temperature: float | None = None,
-        trap_freq: float | None = None,
-        sigma_pos: float | None = None,
+        sigma_detuning: float | None = None,
+        sigma_pos_xyz: tuple[float, float, float] | None = None,
         seed: int = 0,
     ) -> MonteCarloResult:
         """GPU-accelerated Monte Carlo simulation using JAX.
@@ -976,17 +981,13 @@ class CZGateSimulator:
         Parameters
         ----------
         x : list of float
-            Pulse parameters (TO strategy only: [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale]).
+            Pulse parameters (TO strategy only).
         n_shots : int, default=1000
             Number of Monte Carlo shots.
-        T2_star : float or None, default=3e-6
-            Ground-Rydberg coherence time in seconds. ``None`` disables dephasing.
-        temperature : float or None, default=None
-            Atomic temperature in μK.
-        trap_freq : float or None, default=None
-            Trap frequency in kHz.
-        sigma_pos : float or None, default=None
-            Position spread in μm (overrides temperature/trap_freq calculation).
+        sigma_detuning : float or None
+            Detuning noise standard deviation in Hz. ``None`` disables dephasing.
+        sigma_pos_xyz : tuple of 3 floats or None
+            Position noise ``(sigma_x, sigma_y, sigma_z)`` in meters.
         seed : int, default=0
             PRNG seed for reproducibility.
 
@@ -994,12 +995,6 @@ class CZGateSimulator:
         -------
         MonteCarloResult
             Same format as :meth:`run_monte_carlo_simulation`.
-
-        Notes
-        -----
-        - Requires JAX (with optional GPU support).
-        - Only supports TO strategy. AR strategy raises ``NotImplementedError``.
-        - Uses ``jax.experimental.ode.odeint`` (Dormand–Prince) with double precision.
         """
         import jax
         import jax.numpy as jnp
@@ -1010,10 +1005,6 @@ class CZGateSimulator:
         if self.strategy != "TO":
             raise NotImplementedError(
                 "run_monte_carlo_jax only supports TO strategy."
-            )
-        if temperature is not None and trap_freq is None and sigma_pos is None:
-            raise ValueError(
-                "Either trap_freq or sigma_pos must be provided when temperature is set."
             )
 
         # --- Extract pulse parameters ---
@@ -1035,8 +1026,6 @@ class CZGateSimulator:
         H_1013_sum = H_1013 + H_1013_conj
 
         # --- Build detuning perturbation mask ---
-        # Rydberg levels are indices 5, 6 in single-atom (7-dim) basis.
-        # Two-atom perturbation = I⊗Δ + Δ⊗I where Δ = diag(0,0,0,0,0,1,1)
         pert_sq = np.zeros((7, 7), dtype=np.complex128)
         pert_sq[5, 5] = 1.0
         pert_sq[6, 6] = 1.0
@@ -1050,30 +1039,38 @@ class CZGateSimulator:
         C_6 = self.v_ryd * d_nominal**6
 
         # --- Compute noise parameters (gated by enable flags) ---
-        sigma_delta = (
-            self._compute_detuning_sigma(T2_star)
-            if self.enable_rydberg_dephasing and T2_star
+        sigma_delta_rad = (
+            2 * np.pi * sigma_detuning
+            if self.enable_rydberg_dephasing and sigma_detuning is not None
             else None
         )
-        sigma_position = (
-            self._compute_position_sigma(temperature, trap_freq, sigma_pos)
-            if self.enable_position_error
-            else None
+        use_position = (
+            self.enable_position_error and sigma_pos_xyz is not None
         )
 
         # --- Sample perturbations ---
         key = jax.random.PRNGKey(seed)
-        key1, key2, key3 = jax.random.split(key, 3)
 
-        if sigma_delta is not None:
-            delta_errs = jax.random.normal(key1, (n_shots,)) * sigma_delta
+        if sigma_delta_rad is not None:
+            key, key1 = jax.random.split(key)
+            delta_errs = jax.random.normal(key1, (n_shots,)) * sigma_delta_rad
         else:
             delta_errs = jnp.zeros(n_shots)
 
-        if sigma_position is not None:
-            delta_r1 = jax.random.normal(key2, (n_shots,)) * sigma_position
-            delta_r2 = jax.random.normal(key3, (n_shots,)) * sigma_position
-            d_new = d_nominal + delta_r1 - delta_r2
+        if use_position:
+            sx_um, sy_um, sz_um = [s * 1e6 for s in sigma_pos_xyz]
+            keys = jax.random.split(key, 7)
+            dx1 = jax.random.normal(keys[0], (n_shots,)) * sx_um
+            dy1 = jax.random.normal(keys[1], (n_shots,)) * sy_um
+            dz1 = jax.random.normal(keys[2], (n_shots,)) * sz_um
+            dx2 = jax.random.normal(keys[3], (n_shots,)) * sx_um
+            dy2 = jax.random.normal(keys[4], (n_shots,)) * sy_um
+            dz2 = jax.random.normal(keys[5], (n_shots,)) * sz_um
+            d_new = jnp.sqrt(
+                (d_nominal + dx1 - dx2) ** 2
+                + (dy1 - dy2) ** 2
+                + (dz1 - dz2) ** 2
+            )
             d_new = jnp.maximum(d_new, 0.1)
             delta_v = C_6 / d_new**6 - self.v_ryd
         else:
@@ -1166,65 +1163,9 @@ class CZGateSimulator:
             std_infidelity=float(np.std(infidelities)),
             n_shots=n_shots,
             fidelities=fidelities,
-            detuning_samples=np.asarray(delta_errs) if sigma_delta is not None else None,
-            distance_samples=np.asarray(d_new) if sigma_position is not None else None,
+            detuning_samples=np.asarray(delta_errs) if sigma_delta_rad is not None else None,
+            distance_samples=np.asarray(d_new) if use_position else None,
         )
-
-    def _compute_detuning_sigma(self, T2_star: float) -> float:
-        """Compute detuning noise standard deviation from T2* coherence time.
-
-        For a Gaussian decay profile exp(-(t/T2*)²), the corresponding
-        detuning noise has σ_δ = √2 / T2* in rad/s.
-
-        Parameters
-        ----------
-        T2_star : float
-            Coherence time in seconds.
-
-        Returns
-        -------
-        float
-            Detuning standard deviation in rad/s.
-        """
-        return np.sqrt(2) / T2_star
-
-    def _compute_position_sigma(
-        self,
-        temperature: float | None,
-        trap_freq: float | None,
-        sigma_pos: float | None,
-    ) -> float | None:
-        """Compute position spread from thermal parameters.
-
-        Parameters
-        ----------
-        temperature : float or None
-            Atomic temperature in μK.
-        trap_freq : float or None
-            Trap frequency in kHz.
-        sigma_pos : float or None
-            Direct position spread in μm (overrides calculation).
-
-        Returns
-        -------
-        float or None
-            Position standard deviation in μm, or None if disabled.
-        """
-        if sigma_pos is not None:
-            return sigma_pos
-        if temperature is None:
-            return None
-        if trap_freq is None or trap_freq <= 0:
-            raise ValueError("trap_freq must be positive when temperature is specified.")
-
-        # Convert units
-        T_K = temperature * 1e-6  # μK to K
-        omega = 2 * np.pi * trap_freq * 1e3  # kHz to rad/s
-        m_Rb = 87 * 1.66054e-27  # 87Rb mass in kg
-
-        # σ_pos = sqrt(k_B T / (m ω²))
-        sigma_m = np.sqrt(kB * T_K / (m_Rb * omega**2))
-        return sigma_m * 1e6  # Convert to μm
 
     def _get_nominal_distance(self) -> float:
         """Get the nominal interatomic distance in μm.
@@ -1323,9 +1264,8 @@ class CZGateSimulator:
         self,
         x: list[float],
         n_shots: int = 1000,
-        T2_star: float = 3e-6,
-        temperature: float = 15.0,
-        trap_freq: float = 50.0,
+        sigma_detuning: float | None = None,
+        sigma_pos_xyz: tuple[float, float, float] | None = None,
         seed: int | None = None,
     ) -> dict[str, float]:
         """Compute error budget breakdown for the CZ gate.
@@ -1340,12 +1280,10 @@ class CZGateSimulator:
             Pulse parameters.
         n_shots : int, default=1000
             Number of Monte Carlo shots per error source.
-        T2_star : float, default=3e-6
-            Ground-Rydberg coherence time in seconds.
-        temperature : float, default=15.0
-            Atomic temperature in μK.
-        trap_freq : float, default=50.0
-            Trap frequency in kHz.
+        sigma_detuning : float or None
+            Detuning noise standard deviation in Hz (e.g. 170e3).
+        sigma_pos_xyz : tuple of 3 floats or None
+            Position noise ``(sigma_x, sigma_y, sigma_z)`` in meters.
         seed : int or None, default=None
             Random seed for reproducibility.
 
@@ -1354,21 +1292,21 @@ class CZGateSimulator:
         dict
             Error budget with keys:
             - 'ideal_infidelity': Infidelity without noise
-            - 'T2_star_infidelity': Infidelity with only T2* dephasing
+            - 'dephasing_infidelity': Infidelity with only dephasing
             - 'position_infidelity': Infidelity with only position fluctuations
             - 'total_infidelity': Infidelity with both error sources
-            - 'T2_star_contribution': Isolated T2* contribution
+            - 'dephasing_contribution': Isolated dephasing contribution
             - 'position_contribution': Isolated position contribution
         """
         # Ideal (no noise)
-        ideal_infidelity = self.gate_fidelity(x)
+        ideal_infidelity = self._gate_infidelity_single(x)
 
-        # T2* only
-        result_t2 = self.run_monte_carlo_simulation(
+        # Dephasing only
+        result_deph = self.run_monte_carlo_simulation(
             x,
             n_shots=n_shots,
-            T2_star=T2_star,
-            temperature=None,
+            sigma_detuning=sigma_detuning,
+            sigma_pos_xyz=None,
             seed=seed,
         )
 
@@ -1376,9 +1314,8 @@ class CZGateSimulator:
         result_pos = self.run_monte_carlo_simulation(
             x,
             n_shots=n_shots,
-            T2_star=None,
-            temperature=temperature,
-            trap_freq=trap_freq,
+            sigma_detuning=None,
+            sigma_pos_xyz=sigma_pos_xyz,
             seed=seed + 1 if seed else None,
         )
 
@@ -1386,21 +1323,20 @@ class CZGateSimulator:
         result_both = self.run_monte_carlo_simulation(
             x,
             n_shots=n_shots,
-            T2_star=T2_star,
-            temperature=temperature,
-            trap_freq=trap_freq,
+            sigma_detuning=sigma_detuning,
+            sigma_pos_xyz=sigma_pos_xyz,
             seed=seed + 2 if seed else None,
         )
 
         return {
             "ideal_infidelity": ideal_infidelity,
-            "T2_star_infidelity": result_t2.mean_infidelity,
-            "T2_star_std": result_t2.std_infidelity,
+            "dephasing_infidelity": result_deph.mean_infidelity,
+            "dephasing_std": result_deph.std_infidelity,
             "position_infidelity": result_pos.mean_infidelity,
             "position_std": result_pos.std_infidelity,
             "total_infidelity": result_both.mean_infidelity,
             "total_std": result_both.std_infidelity,
-            "T2_star_contribution": result_t2.mean_infidelity - ideal_infidelity,
+            "dephasing_contribution": result_deph.mean_infidelity - ideal_infidelity,
             "position_contribution": result_pos.mean_infidelity - ideal_infidelity,
         }
 
@@ -2291,7 +2227,7 @@ class CZGateSimulator:
         cache = {}
 
         def objective(x):
-            val = self.gate_fidelity(x, fid_type=fid_type)
+            val = self._gate_infidelity_single(x, fid_type=fid_type)
             cache['last_val'] = val
             return val
 
