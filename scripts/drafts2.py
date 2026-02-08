@@ -1,7 +1,9 @@
+# Find the optimal parameters for the bright detuning CZ gate
 from ryd_gate.ideal_cz import CZGateSimulator
 
 X_TO_OUR_BRIGHT = [
-    -0.6918786926901699, 1.0385195543731935, 0.34079994362678945, 1.5661611471642423, 2.803412458711804, 1.3399024260140027
+   -0.9509172186259588, 1.105272315809505, 0.383911389220584,
+   1.2848721417313045, 1.3035218398648376, 1.246566016566724
 ]
 sim_perfect = CZGateSimulator(
         param_set="our", strategy="TO",

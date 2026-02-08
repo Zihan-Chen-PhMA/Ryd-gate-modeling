@@ -2,8 +2,9 @@
 from ryd_gate.ideal_cz import CZGateSimulator
 
 X_TO_OUR_BRIGHT = [
-    -0.6918786926901699, 1.0385195543731935, 0.34079994362678945, 1.5661611471642423, 2.803412458711804, 1.3399024260140027
+   -1.60692534, 0.83165467, 2.22419665, 0.46423769, 0.90466714, 1.24153599
 ]
+# [-0.57427882  1.02548636  0.37090274  1.40236909  3.58690842  1.31468954]
 sim_perfect = CZGateSimulator(
         param_set="our", strategy="TO",
         blackmanflag=True, detuning_sign=-1,
