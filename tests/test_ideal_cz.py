@@ -675,8 +675,40 @@ class TestIndependentErrorFlags:
         infidelity = sim.gate_fidelity(x)
         assert infidelity < 5e-3, f"Infidelity {infidelity} too large with flag off"
 
-    def test_zero_state_scattering_hamiltonian_coupling_exists(self):
-        """420nm Hamiltonian should have nonzero |0⟩→mid coupling when flag is on."""
+    def test_zero_state_lightshift_matrix(self):
+        """Light-shift matrix should be diagonal and gated by the flag."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim_on = CZGateSimulator(param_set="our", enable_zero_state_scattering=True)
+        sim_off = CZGateSimulator(param_set="our", enable_zero_state_scattering=False)
+        diag_on = np.diag(sim_on.tq_ham_lightshift_zero)
+        diag_off = np.diag(sim_off.tq_ham_lightshift_zero)
+
+        assert np.any(diag_on != 0), "Flag on should produce nonzero light shifts"
+        assert np.allclose(diag_off, 0), "Flag off should produce zero light shifts"
+        # |1,1⟩ should remain unshifted (no |1⟩ light shift contribution)
+        idx_11 = 1 * 7 + 1
+        assert diag_on[idx_11] == 0
+
+    def test_zero_state_lightshift_signs(self):
+        """|0⟩ should shift downward, |eᵢ⟩ should shift upward (our params)."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(param_set="our", enable_zero_state_scattering=True)
+        diag = np.diag(sim.tq_ham_lightshift_zero)
+        # Extract single-atom shifts from two-atom diagonal entries
+        s0 = diag[0 * 7 + 1]  # |0,1⟩ = s0 + s1 (s1=0)
+        s2 = diag[2 * 7 + 1]  # |e1,1⟩ = s2
+        s3 = diag[3 * 7 + 1]  # |e2,1⟩ = s3
+        s4 = diag[4 * 7 + 1]  # |e3,1⟩ = s4
+
+        assert s0.real < 0, "Expected negative |0⟩ light shift"
+        assert s2.real > 0, "Expected positive |e1⟩ light shift"
+        assert s3.real > 0, "Expected positive |e2⟩ light shift"
+        assert s4.real > 0, "Expected positive |e3⟩ light shift"
+
+    def test_zero_state_lightshift_no_coupling_in_h420(self):
+        """420nm Hamiltonian should not directly couple |0⟩ to |eᵢ⟩."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         for param_set in ("our", "lukin"):
@@ -686,26 +718,10 @@ class TestIndependentErrorFlags:
             sim_off = CZGateSimulator(
                 param_set=param_set, enable_zero_state_scattering=False,
             )
-            ham_on = sim_on.tq_ham_420
-            ham_off = sim_off.tq_ham_420
-            # Two-atom index (0, e_i) = 0*7 + e_i for atom 2
-            for ei in (2, 3, 4):
-                assert ham_on[ei, 0] != 0, f"|0⟩→|e{ei-1}⟩ coupling missing ({param_set})"
-                assert ham_off[ei, 0] == 0, f"|0⟩→|e{ei-1}⟩ should be zero when flag off ({param_set})"
-
-    def test_zero_state_scattering_diagonal_energy(self):
-        """ham_const diagonal should have |0⟩ energy only when flag is on."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim_off = CZGateSimulator(param_set="our", enable_zero_state_scattering=False)
-        sim_on = CZGateSimulator(param_set="our", enable_zero_state_scattering=True)
-        diag_off = np.diag(sim_off.tq_ham_const)
-        diag_on = np.diag(sim_on.tq_ham_const)
-        # State (0,0) = index 0 in two-atom basis: gets 2× single-atom energy
-        assert diag_off[0] == 0, "Flag off should have zero |0,0⟩ energy"
-        assert diag_on[0] != 0, "Flag on should have nonzero |0,0⟩ energy"
-        # Physical value: 2 × (−2π × 6.835 GHz) ≈ −8.6e10
-        assert abs(diag_on[0]) > 2 * np.pi * 1e9
+            for sim in (sim_on, sim_off):
+                ham = sim.tq_ham_420
+                for ei in (2, 3, 4):
+                    assert ham[ei, 0] == 0, f"|0⟩→|e{ei-1}⟩ coupling should be zero ({param_set})"
 
     def test_all_flags_off_hermitian_hamiltonian(self):
         """All flags off should produce a purely real-diagonal, Hermitian Hamiltonian."""
