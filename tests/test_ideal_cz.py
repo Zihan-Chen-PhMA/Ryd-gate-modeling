@@ -663,6 +663,50 @@ class TestIndependentErrorFlags:
         assert sim.rabi_420_garbage != 0.0
         assert sim.rabi_1013_garbage != 0.0
 
+    def test_zero_state_scattering_flag_off_matches_current(self):
+        """Flag off should give same fidelity as current code (near-perfect gate)."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", blackmanflag=False,
+            enable_zero_state_scattering=False,
+        )
+        x = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
+        infidelity = sim.gate_fidelity(x)
+        assert infidelity < 5e-3, f"Infidelity {infidelity} too large with flag off"
+
+    def test_zero_state_scattering_hamiltonian_coupling_exists(self):
+        """420nm Hamiltonian should have nonzero |0⟩→mid coupling when flag is on."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        for param_set in ("our", "lukin"):
+            sim_on = CZGateSimulator(
+                param_set=param_set, enable_zero_state_scattering=True,
+            )
+            sim_off = CZGateSimulator(
+                param_set=param_set, enable_zero_state_scattering=False,
+            )
+            ham_on = sim_on.tq_ham_420
+            ham_off = sim_off.tq_ham_420
+            # Two-atom index (0, e_i) = 0*7 + e_i for atom 2
+            for ei in (2, 3, 4):
+                assert ham_on[ei, 0] != 0, f"|0⟩→|e{ei-1}⟩ coupling missing ({param_set})"
+                assert ham_off[ei, 0] == 0, f"|0⟩→|e{ei-1}⟩ should be zero when flag off ({param_set})"
+
+    def test_zero_state_scattering_diagonal_energy(self):
+        """ham_const diagonal should have |0⟩ energy only when flag is on."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim_off = CZGateSimulator(param_set="our", enable_zero_state_scattering=False)
+        sim_on = CZGateSimulator(param_set="our", enable_zero_state_scattering=True)
+        diag_off = np.diag(sim_off.tq_ham_const)
+        diag_on = np.diag(sim_on.tq_ham_const)
+        # State (0,0) = index 0 in two-atom basis: gets 2× single-atom energy
+        assert diag_off[0] == 0, "Flag off should have zero |0,0⟩ energy"
+        assert diag_on[0] != 0, "Flag on should have nonzero |0,0⟩ energy"
+        # Physical value: 2 × (−2π × 6.835 GHz) ≈ −8.6e10
+        assert abs(diag_on[0]) > 2 * np.pi * 1e9
+
     def test_all_flags_off_hermitian_hamiltonian(self):
         """All flags off should produce a purely real-diagonal, Hermitian Hamiltonian."""
         from ryd_gate.ideal_cz import CZGateSimulator

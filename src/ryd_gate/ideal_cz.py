@@ -145,6 +145,9 @@ class CZGateSimulator:
     enable_polarization_leakage : bool, default=False
         Include coupling to the unwanted Rydberg state |r'⟩ (state 6)
         via off-polarization Clebsch-Gordan coefficients.
+    enable_zero_state_scattering : bool, default=False
+        Include off-resonant scattering of |0⟩ through intermediate states
+        via the 420nm laser with physical 6.835 GHz detuning.
 
     Attributes
     ----------
@@ -212,6 +215,7 @@ class CZGateSimulator:
         enable_rydberg_dephasing: bool = False,
         enable_position_error: bool = False,
         enable_polarization_leakage: bool = False,
+        enable_zero_state_scattering: bool = False,
         sigma_detuning: float | None = None,
         sigma_pos_xyz: tuple[float, float, float] | None = None,
         n_mc_shots: int = 100,
@@ -243,6 +247,10 @@ class CZGateSimulator:
             automatically runs Monte Carlo and returns ``(mean, std)``.
         enable_polarization_leakage : bool
             Include coupling to the unwanted Rydberg state |r'⟩.
+        enable_zero_state_scattering : bool
+            Include off-resonant scattering of |0⟩ through intermediate states.
+            When False, |0⟩ has effectively infinite detuning (no effect).
+            When True, |0⟩ has physical 6.835 GHz detuning.
         sigma_detuning : float or None
             Detuning noise standard deviation in Hz (e.g. 170e3 for 170 kHz).
             Required when ``enable_rydberg_dephasing=True``.
@@ -265,6 +273,7 @@ class CZGateSimulator:
         self.enable_rydberg_dephasing = enable_rydberg_dephasing
         self.enable_position_error = enable_position_error
         self.enable_polarization_leakage = enable_polarization_leakage
+        self.enable_zero_state_scattering = enable_zero_state_scattering
         self.sigma_detuning = sigma_detuning
         self.sigma_pos_xyz = sigma_pos_xyz
         self.n_mc_shots = n_mc_shots
@@ -298,7 +307,6 @@ class CZGateSimulator:
     def _init_our_params(self) -> None:
         """Initialize 'our' lab experimental parameters (n=70 Rydberg)."""
         self.atom = Rubidium87()
-        self.temperature = 300 # K
         # Rydberg level and laser parameters
         self.ryd_level = 70
         # Assumes rabi_420 = rabi_1013, effective Rabi = 7 MHz
@@ -1362,6 +1370,12 @@ class CZGateSimulator:
         middecay = self.mid_state_decay_rate if self.enable_intermediate_decay else 0
         ryddecay = self.ryd_state_decay_rate if self.enable_rydberg_decay else 0
 
+        # Ground state |0⟩ energy (hyperfine splitting below |1⟩)
+        # Only added when zero-state scattering is enabled; otherwise |0⟩
+        # stays at zero energy and has no coupling, so it is effectively decoupled.
+        if self.enable_zero_state_scattering:
+            ham_sq_mat[0][0] = -2 * np.pi * 6.835e9  # Physical: −6.835 GHz
+
         # Intermediate state energies with hyperfine splitting
         ham_sq_mat[2][2] = self.Delta - 2 * np.pi * 51e6 - 1j * middecay / 2
         ham_sq_mat[3][3] = self.Delta - 1j * middecay / 2
@@ -1436,6 +1450,37 @@ class CZGateSimulator:
             + self.rabi_420_garbage * CG(3 / 2, -1 / 2, 3 / 2, -1 / 2, 3, -1)
         ) / 2
 
+        # |0⟩ → |e1⟩, |e2⟩, |e3⟩ transitions (F=1, mF=0)
+        # Only included when zero-state scattering is enabled.
+        if self.enable_zero_state_scattering:
+            # Ground-state CG ratio: CG(F=1)/CG(F=2) for each mJ pathway
+            # For σ⁻: main path (mJ=-1/2) ratio=+1, garbage path (mJ=+1/2) ratio=-1
+            cg_ratio_main = CG(1 / 2, -1 / 2, 3 / 2, 1 / 2, 1, 0) / CG(
+                1 / 2, -1 / 2, 3 / 2, 1 / 2, 2, 0
+            )
+            cg_ratio_garb = CG(1 / 2, 1 / 2, 3 / 2, -1 / 2, 1, 0) / CG(
+                1 / 2, 1 / 2, 3 / 2, -1 / 2, 2, 0
+            )
+
+            ham_sq_mat[2][0] = (
+                cg_ratio_main * self.rabi_420 * CG(3 / 2, -3 / 2, 3 / 2, 1 / 2, 1, -1)
+                + cg_ratio_garb
+                * self.rabi_420_garbage
+                * CG(3 / 2, -1 / 2, 3 / 2, -1 / 2, 1, -1)
+            ) / 2
+            ham_sq_mat[3][0] = (
+                cg_ratio_main * self.rabi_420 * CG(3 / 2, -3 / 2, 3 / 2, 1 / 2, 2, -1)
+                + cg_ratio_garb
+                * self.rabi_420_garbage
+                * CG(3 / 2, -1 / 2, 3 / 2, -1 / 2, 2, -1)
+            ) / 2
+            ham_sq_mat[4][0] = (
+                cg_ratio_main * self.rabi_420 * CG(3 / 2, -3 / 2, 3 / 2, 1 / 2, 3, -1)
+                + cg_ratio_garb
+                * self.rabi_420_garbage
+                * CG(3 / 2, -1 / 2, 3 / 2, -1 / 2, 3, -1)
+            ) / 2
+
         ham_tq_mat = ham_tq_mat + np.kron(np.eye(7), ham_sq_mat)
         ham_tq_mat = ham_tq_mat + np.kron(ham_sq_mat, np.eye(7))
         return ham_tq_mat
@@ -1498,6 +1543,37 @@ class CZGateSimulator:
             self.rabi_420 * CG(3 / 2, 3 / 2, 3 / 2, -1 / 2, 3, 1)
             + self.rabi_420_garbage * CG(3 / 2, 1 / 2, 3 / 2, 1 / 2, 3, 1)
         ) / 2
+
+        # |0⟩ → |e1⟩, |e2⟩, |e3⟩ transitions (F=1, mF=0)
+        # Only included when zero-state scattering is enabled.
+        if self.enable_zero_state_scattering:
+            # Ground-state CG ratio: CG(F=1)/CG(F=2) for each mJ pathway
+            # For σ⁺: main path (mJ=+1/2) ratio=-1, garbage path (mJ=-1/2) ratio=+1
+            cg_ratio_main = CG(1 / 2, 1 / 2, 3 / 2, -1 / 2, 1, 0) / CG(
+                1 / 2, 1 / 2, 3 / 2, -1 / 2, 2, 0
+            )
+            cg_ratio_garb = CG(1 / 2, -1 / 2, 3 / 2, 1 / 2, 1, 0) / CG(
+                1 / 2, -1 / 2, 3 / 2, 1 / 2, 2, 0
+            )
+
+            ham_sq_mat[2][0] = (
+                cg_ratio_main * self.rabi_420 * CG(3 / 2, 3 / 2, 3 / 2, -1 / 2, 1, 1)
+                + cg_ratio_garb
+                * self.rabi_420_garbage
+                * CG(3 / 2, 1 / 2, 3 / 2, 1 / 2, 1, 1)
+            ) / 2
+            ham_sq_mat[3][0] = (
+                cg_ratio_main * self.rabi_420 * CG(3 / 2, 3 / 2, 3 / 2, -1 / 2, 2, 1)
+                + cg_ratio_garb
+                * self.rabi_420_garbage
+                * CG(3 / 2, 1 / 2, 3 / 2, 1 / 2, 2, 1)
+            ) / 2
+            ham_sq_mat[4][0] = (
+                cg_ratio_main * self.rabi_420 * CG(3 / 2, 3 / 2, 3 / 2, -1 / 2, 3, 1)
+                + cg_ratio_garb
+                * self.rabi_420_garbage
+                * CG(3 / 2, 1 / 2, 3 / 2, 1 / 2, 3, 1)
+            ) / 2
 
         ham_tq_mat = ham_tq_mat + np.kron(np.eye(7), ham_sq_mat)
         ham_tq_mat = ham_tq_mat + np.kron(ham_sq_mat, np.eye(7))
