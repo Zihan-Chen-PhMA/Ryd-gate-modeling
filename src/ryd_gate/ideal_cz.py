@@ -345,9 +345,19 @@ class CZGateSimulator:
         self.mid_state_decay_rate = 1 / (110.7e-9)
         self.mid_garb_decay_rate = 1 / (110.7e-9)
         # refer to the data from https://arxiv.org/abs/0810.0339, Table VII, 70S1/2 @ 300 K
+        # Total rate = inherent radiative (RD) + blackbody radiation (BBR)
         self.ryd_state_decay_rate = 1 / (151.55e-6)
+        self.ryd_RD_rate = 1 / (410.41e-6)  # Inherent radiative decay rate
+        self.ryd_BBR_rate = self.ryd_state_decay_rate - self.ryd_RD_rate  # BBR-induced rate
         # Suppose the garbage state has the identical decay rate
         self.ryd_garb_decay_rate = 1 / (151.55e-6)
+
+        # Branching ratios
+        self._ryd_branch = self._rydberg_branching_ratios()
+        self._mid_branch = {
+            F: self._mid_branching_ratios(F, mF=-1)
+            for F in (1, 2, 3)
+        }
 
         # Build Hamiltonians
         self.tq_ham_const = self._tq_ham_const()
@@ -391,8 +401,18 @@ class CZGateSimulator:
         # Decay rate parameters
         self.mid_state_decay_rate = 1 / (110e-9)
         self.mid_garb_decay_rate = 1 / (110e-9)
-        self.ryd_state_decay_rate = 1 / (88e-6)  # 53S lifetime ~88 μs
+        # 53S1/2 @ 300 K, refer to https://arxiv.org/abs/0810.0339
+        self.ryd_state_decay_rate = 1 / (88e-6)  # 53S total lifetime ~88 μs
+        self.ryd_RD_rate = 1 / (147.64e-6)  # 53S inherent radiative decay rate
+        self.ryd_BBR_rate = self.ryd_state_decay_rate - self.ryd_RD_rate  # BBR-induced rate
         self.ryd_garb_decay_rate = 1 / (88e-6)
+
+        # Branching ratios
+        self._ryd_branch = self._rydberg_branching_ratios()
+        self._mid_branch = {
+            F: self._mid_branching_ratios(F, mF=1)
+            for F in (1, 2, 3)
+        }
 
         # Build Hamiltonians
         self.tq_ham_const = self._tq_ham_const()
@@ -611,6 +631,191 @@ class CZGateSimulator:
             )
             return (result.mean_infidelity, result.std_infidelity)
         return self._gate_infidelity_single(x, fid_type)
+
+    def error_budget(
+        self,
+        x: list[float] | None = None,
+        initial_states: list[str] | None = None,
+    ) -> dict:
+        """Compute error budget with XYZ/AL/LG breakdown by error source.
+
+        For each initial state, runs the gate simulation to extract
+        time-resolved populations in intermediate and Rydberg states.
+        Uses ``_decay_integrate`` and branching ratios to split total
+        decay into error types:
+
+        - **XYZ** (Pauli): population decaying to |0⟩ or |1⟩
+        - **AL** (Atom Loss): population lost via BBR or remaining in
+          Rydberg state at gate end
+        - **LG** (Leakage): population decaying to non-computational
+          ground states
+
+        Parameters
+        ----------
+        x : list of float, optional
+            Pulse parameters. If None, uses stored parameters.
+        initial_states : list of str, optional
+            Initial states to average over. Defaults to ``['01', '11']``.
+
+        Returns
+        -------
+        dict
+            Nested dict with keys for each error source, each containing
+            'total', 'XYZ', 'AL', 'LG' values (averaged over initial states).
+        """
+        x = self._resolve_params(x, "error_budget")
+        if initial_states is None:
+            initial_states = ["01", "11"]
+
+        # Accumulate results over initial states
+        budget_accum = {
+            "rydberg_decay": {"XYZ": 0.0, "AL": 0.0, "LG": 0.0},
+            "intermediate_decay": {"XYZ": 0.0, "AL": 0.0, "LG": 0.0},
+        }
+
+        for init_state in initial_states:
+            pops = self._population_evolution(x, init_state)
+            t_list = pops["t_list"]
+
+            # --- Rydberg decay ---
+            ryd_occ = pops["ryd"]
+            ryd_garb_occ = pops["ryd_garb"]
+
+            # Total decay during gate (RD channel)
+            rd_decay = self._decay_integrate(
+                t_list, ryd_occ, self.ryd_RD_rate,
+            )[0, -1]
+            # BBR decay during gate → AL
+            bbr_decay = self._decay_integrate(
+                t_list, ryd_occ, self.ryd_BBR_rate,
+            )[0, -1]
+            # Residual Rydberg population at gate end → AL
+            ryd_residual = ryd_occ[-1] + ryd_garb_occ[-1]
+
+            br = self._ryd_branch
+            xyz_frac = br["to_0"] + br["to_1"]
+            lg_frac = br["to_L0"] + br["to_L1"]
+
+            budget_accum["rydberg_decay"]["XYZ"] += rd_decay * xyz_frac
+            budget_accum["rydberg_decay"]["LG"] += rd_decay * lg_frac
+            budget_accum["rydberg_decay"]["AL"] += bbr_decay + ryd_residual
+
+            # --- Intermediate decay ---
+            # Per-level: e1(F=1,idx=2), e2(F=2,idx=3), e3(F=3,idx=4)
+            mid_xyz = 0.0
+            mid_lg = 0.0
+            for F, level_key in [(1, "e1"), (2, "e2"), (3, "e3")]:
+                mid_occ = pops[level_key]
+                mid_decay_total = self._decay_integrate(
+                    t_list, mid_occ, self.mid_state_decay_rate,
+                )[0, -1]
+                mid_residual = mid_occ[-1]
+
+                mbr = self._mid_branch[F]
+                m_xyz_frac = mbr["to_0"] + mbr["to_1"]
+                m_lg_frac = mbr["to_L0"] + mbr["to_L1"]
+
+                # Decay during gate
+                mid_xyz += mid_decay_total * m_xyz_frac
+                mid_lg += mid_decay_total * m_lg_frac
+
+                # Residual mid-state at gate end decays to ground
+                mid_xyz += mid_residual * m_xyz_frac
+                mid_lg += mid_residual * m_lg_frac
+
+            budget_accum["intermediate_decay"]["XYZ"] += mid_xyz
+            budget_accum["intermediate_decay"]["LG"] += mid_lg
+
+        # Average over initial states
+        n = len(initial_states)
+        result = {}
+        for source, errors in budget_accum.items():
+            total = sum(errors.values()) / n
+            result[source] = {
+                "total": total,
+                "XYZ": errors["XYZ"] / n,
+                "AL": errors["AL"] / n,
+                "LG": errors["LG"] / n,
+            }
+        return result
+
+    def _population_evolution(
+        self,
+        x: list[float],
+        initial_state: str,
+    ) -> dict[str, NDArray[np.floating]]:
+        """Run gate simulation and return per-level population time series.
+
+        Parameters
+        ----------
+        x : list of float
+            Pulse parameters.
+        initial_state : str
+            Initial two-qubit state label.
+
+        Returns
+        -------
+        dict
+            Keys: 't_list', 'e1', 'e2', 'e3', 'ryd', 'ryd_garb' with
+            population arrays of shape (1000,).
+        """
+        sss_states = self._build_sss_state_map()
+        if initial_state not in sss_states:
+            raise ValueError(f"Unsupported initial state: '{initial_state}'")
+        ini_state = sss_states[initial_state]
+
+        if self.strategy == "TO":
+            t_gate = x[5] * self.time_scale
+            res_list = self._get_gate_result_TO(
+                phase_amp=x[0],
+                omega=x[1] * self.rabi_eff,
+                phase_init=x[2],
+                delta=x[3] * self.rabi_eff,
+                t_gate=t_gate,
+                state_mat=ini_state,
+                t_eval=np.linspace(0, t_gate, 1000),
+            )
+        elif self.strategy == "AR":
+            t_gate = x[6] * self.time_scale
+            res_list = self._get_gate_result_AR(
+                omega=x[0] * self.rabi_eff,
+                phase_amp1=x[1],
+                phase_init1=x[2],
+                phase_amp2=x[3],
+                phase_init2=x[4],
+                delta=x[5] * self.rabi_eff,
+                t_gate=t_gate,
+                state_mat=ini_state,
+                t_eval=np.linspace(0, t_gate, 1000),
+            )
+        else:
+            raise ValueError(
+                f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
+            )
+
+        t_list = np.linspace(0, t_gate, 1000)
+
+        # Build per-level occupation operators
+        occ_ops = {
+            "e1": self._occ_operator(2),
+            "e2": self._occ_operator(3),
+            "e3": self._occ_operator(4),
+            "ryd": self._occ_operator(5),
+            "ryd_garb": self._occ_operator(6),
+        }
+
+        result = {"t_list": t_list}
+        for key, op in occ_ops.items():
+            pop = np.array([
+                np.abs(np.dot(
+                    np.conjugate(res_list[:, col]),
+                    op @ res_list[:, col],
+                ))
+                for col in range(res_list.shape[1])
+            ])
+            result[key] = pop
+
+        return result
 
     def fidelity_sss(self, x: list[float]) -> float:
         """Average state infidelity over 12 SSS states."""
@@ -1684,6 +1889,137 @@ class CZGateSimulator:
             atol=1e-12,
         )
         return np.array(result.y)
+
+    def _rydberg_branching_ratios(self) -> dict[str, float]:
+        """Compute branching ratios for Rydberg radiative decay to ground states.
+
+        Calculates the 70S (or 53S) → 5P → 5S cascade decay fractions using
+        Clebsch-Gordan coefficients, following the same method as
+        ``full_error_model.py:rydberg_RD_branch_ratio()``.
+
+        Returns
+        -------
+        dict
+            Keys 'to_0', 'to_1', 'to_L0', 'to_L1' with fractional values
+            summing to 1.
+        """
+        I = 3 / 2
+        mI = 1 / 2
+        nr = self.ryd_level
+        lr, jr = 0, 1 / 2
+        if self.param_set == "our":
+            mjr = -1 / 2  # target Rydberg mJ for σ⁻
+        else:
+            mjr = 1 / 2   # target Rydberg mJ for σ⁺ (lukin)
+        fr_list = [2, 1]
+        mfr = mI + mjr
+
+        ne, le = 5, 1
+        je_list = [3 / 2, 1 / 2]
+        ng, lg, jg = 5, 0, 1 / 2
+
+        a = []
+        b = []
+
+        for _je in je_list:
+            fe_range = np.arange(abs(I - _je), I + _je + 1, 1)
+            for _fe in fe_range:
+                mfe_range = np.arange(-_fe, _fe + 1, 1)
+                for _mfe in mfe_range:
+                    t = 0.0
+                    for _fr in fr_list:
+                        if abs(mfr) <= _fr and abs(mfr - _mfe) < 2:
+                            t += CG(jr, mjr, I, mI, _fr, mfr) * \
+                                self.atom.getDipoleMatrixElementHFS(
+                                    ne, le, _je, _fe, _mfe,
+                                    nr, lr, jr, _fr, mfr,
+                                    q=mfr - _mfe,
+                                )
+                    a.append(t**2)
+
+                    bb = []
+                    for fg in [2, 1]:
+                        mfg_range = np.arange(-fg, fg + 1, 1)
+                        for _mfg in mfg_range:
+                            if abs(_mfg - _mfe) < 2:
+                                bb.append(
+                                    self.atom.getDipoleMatrixElementHFS(
+                                        ne, le, _je, _fe, _mfe,
+                                        ng, lg, jg, fg, _mfg,
+                                        q=_mfg - _mfe,
+                                    ) ** 2
+                                )
+                            else:
+                                bb.append(0.0)
+                    bb_sum = np.sum(bb)
+                    bb = [x / bb_sum for x in bb]
+                    b.append(bb)
+
+        a_sum = np.sum(a)
+        a = [x / a_sum for x in a]
+
+        branch_ratio = np.array(
+            [a[i] * np.array(b[i]) for i in range(len(a))]
+        ).sum(axis=0)
+        # branch_ratio order: F=2 mF=-2,-1,0,1,2 then F=1 mF=-1,0,1
+        # |1⟩ = F=2 mF=0 → index 2, |0⟩ = F=1 mF=0 → index 6
+        return {
+            "to_0": float(branch_ratio[6]),
+            "to_1": float(branch_ratio[2]),
+            "to_L0": float(branch_ratio[5] + branch_ratio[7]),
+            "to_L1": float(
+                branch_ratio[0] + branch_ratio[1]
+                + branch_ratio[3] + branch_ratio[4]
+            ),
+        }
+
+    def _mid_branching_ratios(
+        self, F: int, mF: float,
+    ) -> dict[str, float]:
+        """Compute branching ratios for 6P3/2 intermediate state decay.
+
+        Parameters
+        ----------
+        F : int
+            Hyperfine F quantum number of the intermediate state (1, 2, or 3).
+        mF : float
+            mF quantum number of the intermediate state.
+
+        Returns
+        -------
+        dict
+            Keys 'to_0', 'to_1', 'to_L0', 'to_L1' with fractional values
+            summing to 1.
+        """
+        ne, le, je, fe, mfe = 6, 1, 3 / 2, F, mF
+        ng, lg, jg = 5, 0, 1 / 2
+
+        a = []
+        for fg in [2, 1]:
+            mfg_range = np.arange(-fg, fg + 1, 1)
+            for _mfg in mfg_range:
+                if abs(_mfg - mfe) < 2:
+                    a.append(
+                        self.atom.getDipoleMatrixElementHFS(
+                            ne, le, je, fe, mfe,
+                            ng, lg, jg, fg, _mfg,
+                            q=_mfg - mfe,
+                        ) ** 2
+                    )
+                else:
+                    a.append(0.0)
+        a_sum = np.sum(a)
+        branch_ratio = [x / a_sum for x in a]
+
+        return {
+            "to_0": float(branch_ratio[6]),
+            "to_1": float(branch_ratio[2]),
+            "to_L0": float(branch_ratio[5] + branch_ratio[7]),
+            "to_L1": float(
+                branch_ratio[0] + branch_ratio[1]
+                + branch_ratio[3] + branch_ratio[4]
+            ),
+        }
 
     @staticmethod
     def _build_sss_state_map() -> dict[str, NDArray[np.complexfloating]]:
