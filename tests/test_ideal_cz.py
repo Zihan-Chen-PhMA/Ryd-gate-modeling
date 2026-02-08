@@ -663,17 +663,18 @@ class TestIndependentErrorFlags:
         assert sim.rabi_420_garbage != 0.0
         assert sim.rabi_1013_garbage != 0.0
 
-    def test_zero_state_scattering_flag_off_matches_current(self):
-        """Flag off should give same fidelity as current code (near-perfect gate)."""
+    def test_zero_state_scattering_flag_off_near_perfect(self):
+        """Optimized params (with always-on light shift) should give near-perfect gate."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         sim = CZGateSimulator(
-            param_set="our", strategy="TO", blackmanflag=False,
+            param_set="our", strategy="TO", blackmanflag=True,
             enable_zero_state_scattering=False,
         )
-        x = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
+        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
+             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
         infidelity = sim.gate_fidelity(x)
-        assert infidelity < 5e-3, f"Infidelity {infidelity} too large with flag off"
+        assert infidelity < 1e-6, f"Infidelity {infidelity} too large with optimized params"
 
     def test_zero_state_lightshift_matrix(self):
         """Light-shift matrix should always have nonzero real diagonal (always-on)."""
@@ -741,17 +742,17 @@ class TestIndependentErrorFlags:
         assert np.allclose(sim.tq_ham_const, sim.tq_ham_const.conj().T)
 
     def test_all_flags_off_perfect_gate(self):
-        """All flags off should give near-perfect gate (only residual mid-state)."""
+        """All flags off should give near-perfect gate (includes always-on light shift)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         sim = CZGateSimulator(
-            param_set="our", strategy="TO", blackmanflag=False,
+            param_set="our", strategy="TO", blackmanflag=True,
         )
-        # Optimized TO params (found with polarization leakage on, but state 6
-        # is far-detuned when leakage off, so gate is even better)
-        x = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
+        # Optimized TO params (re-optimized with always-on |0⟩ light shift)
+        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
+             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
         infidelity = sim.gate_fidelity(x)
-        assert infidelity < 5e-3, f"Infidelity {infidelity} too large for all-flags-off gate"
+        assert infidelity < 1e-6, f"Infidelity {infidelity} too large for all-flags-off gate"
 
     def test_all_flags_off_norm_preserved(self):
         """All flags off should preserve state normalization (unitary evolution)."""
