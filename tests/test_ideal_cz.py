@@ -676,7 +676,7 @@ class TestIndependentErrorFlags:
         assert infidelity < 5e-3, f"Infidelity {infidelity} too large with flag off"
 
     def test_zero_state_lightshift_matrix(self):
-        """Light-shift matrix should be diagonal and gated by the flag."""
+        """Light-shift matrix should always have nonzero real diagonal (always-on)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         sim_on = CZGateSimulator(param_set="our", enable_zero_state_scattering=True)
@@ -684,8 +684,14 @@ class TestIndependentErrorFlags:
         diag_on = np.diag(sim_on.tq_ham_lightshift_zero)
         diag_off = np.diag(sim_off.tq_ham_lightshift_zero)
 
-        assert np.any(diag_on != 0), "Flag on should produce nonzero light shifts"
-        assert np.allclose(diag_off, 0), "Flag off should produce zero light shifts"
+        # AC Stark shift is always present (real part)
+        assert np.any(diag_on.real != 0), "Should have nonzero real light shifts"
+        assert np.any(diag_off.real != 0), "Light shift should be present even with flag off"
+        # Real parts should match (same AC Stark shift)
+        assert np.allclose(diag_on.real, diag_off.real)
+        # Flag ON adds imaginary scattering loss on |0⟩; flag OFF is purely real
+        assert np.allclose(diag_off.imag, 0), "Flag off should have no imaginary part"
+        assert np.any(diag_on.imag != 0), "Flag on should have imaginary scattering loss"
         # |1,1⟩ should remain unshifted (no |1⟩ light shift contribution)
         idx_11 = 1 * 7 + 1
         assert diag_on[idx_11] == 0
@@ -694,7 +700,7 @@ class TestIndependentErrorFlags:
         """|0⟩ should shift downward, |eᵢ⟩ should shift upward (our params)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(param_set="our", enable_zero_state_scattering=True)
+        sim = CZGateSimulator(param_set="our")
         diag = np.diag(sim.tq_ham_lightshift_zero)
         # Extract single-atom shifts from two-atom diagonal entries
         s0 = diag[0 * 7 + 1]  # |0,1⟩ = s0 + s1 (s1=0)

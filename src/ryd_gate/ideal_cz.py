@@ -1471,16 +1471,20 @@ class CZGateSimulator:
 
         Uses second-order perturbation theory to compute the AC Stark shift
         on |0⟩ and intermediate states due to off-resonant 420nm coupling.
-        The returned matrix should be multiplied by amplitude(t)^2 in the ODE.
+        The returned matrix should be multiplied by amplitude(t)² in the ODE.
+
+        The AC Stark shift is **always** included (it is physical reality,
+        not an error source).  When ``enable_zero_state_scattering`` is True,
+        an additional imaginary term is added to |0⟩ representing off-resonant
+        photon scattering (the actual irreversible error):
+
+            Γ_scatter = Σᵢ |g_{0,i}|² γᵢ / Δ_{0,i}²
 
         Returns
         -------
         ndarray
             Diagonal light-shift matrix of shape (49, 49).
         """
-        if not self.enable_zero_state_scattering:
-            return np.zeros((49, 49), dtype=np.complex128)
-
         E_0 = -2 * np.pi * 6.835e9
         mid_energies = np.array(
             [
@@ -1494,12 +1498,18 @@ class CZGateSimulator:
 
         ls_sq = np.zeros((7, 7), dtype=np.complex128)
         total_shift = 0.0
+        scatter_rate = 0.0
+        gamma = self.mid_state_decay_rate
         for idx, (g_i, E_e) in enumerate(zip(couplings, mid_energies), start=2):
             detuning = E_e - E_0
             shift = (np.abs(g_i) ** 2) / detuning
             ls_sq[idx][idx] = shift
             total_shift += shift
+            scatter_rate += (np.abs(g_i) ** 2) * gamma / (detuning ** 2)
         ls_sq[0][0] = -total_shift
+
+        if self.enable_zero_state_scattering:
+            ls_sq[0][0] += -1j * scatter_rate / 2
 
         ls_tq = np.kron(np.eye(7), ls_sq) + np.kron(ls_sq, np.eye(7))
         return ls_tq
