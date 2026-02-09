@@ -663,17 +663,18 @@ class TestIndependentErrorFlags:
         assert sim.rabi_420_garbage != 0.0
         assert sim.rabi_1013_garbage != 0.0
 
-    def test_zero_state_scattering_flag_off_matches_current(self):
-        """Flag off should give same fidelity as current code (near-perfect gate)."""
+    def test_zero_state_scattering_flag_off_near_perfect(self):
+        """Optimized params (with always-on light shift) should give near-perfect gate."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         sim = CZGateSimulator(
-            param_set="our", strategy="TO", blackmanflag=False,
+            param_set="our", strategy="TO", blackmanflag=True,
             enable_zero_state_scattering=False,
         )
-        x = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
+        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
+             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
         infidelity = sim.gate_fidelity(x)
-        assert infidelity < 5e-3, f"Infidelity {infidelity} too large with flag off"
+        assert infidelity < 1e-6, f"Infidelity {infidelity} too large with optimized params"
 
     def test_zero_state_lightshift_matrix(self):
         """Light-shift matrix should always have nonzero real diagonal (always-on)."""
@@ -741,17 +742,17 @@ class TestIndependentErrorFlags:
         assert np.allclose(sim.tq_ham_const, sim.tq_ham_const.conj().T)
 
     def test_all_flags_off_perfect_gate(self):
-        """All flags off should give near-perfect gate (only residual mid-state)."""
+        """All flags off should give near-perfect gate (includes always-on light shift)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         sim = CZGateSimulator(
-            param_set="our", strategy="TO", blackmanflag=False,
+            param_set="our", strategy="TO", blackmanflag=True,
         )
-        # Optimized TO params (found with polarization leakage on, but state 6
-        # is far-detuned when leakage off, so gate is even better)
-        x = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
+        # Optimized TO params (re-optimized with always-on |0⟩ light shift)
+        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
+             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
         infidelity = sim.gate_fidelity(x)
-        assert infidelity < 5e-3, f"Infidelity {infidelity} too large for all-flags-off gate"
+        assert infidelity < 1e-6, f"Infidelity {infidelity} too large for all-flags-off gate"
 
     def test_all_flags_off_norm_preserved(self):
         """All flags off should preserve state normalization (unitary evolution)."""
@@ -807,3 +808,106 @@ class TestIndependentErrorFlags:
         assert result.distance_samples is None
         # All shots should have identical fidelity (no noise)
         assert result.std_fidelity == pytest.approx(0.0, abs=1e-10)
+
+
+class TestBranchingRatios:
+    """Tests for branching ratio calculations and error budget."""
+
+    def test_rydberg_branching_ratios_sum_to_one(self):
+        """Rydberg branching ratios should sum to 1."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(param_set="our", strategy="TO")
+        br = sim._ryd_branch
+        total = br["to_0"] + br["to_1"] + br["to_L0"] + br["to_L1"]
+        assert total == pytest.approx(1.0, abs=1e-6)
+
+    def test_mid_branching_ratios_sum_to_one(self):
+        """Mid-state branching ratios should sum to 1 for each F."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(param_set="our", strategy="TO")
+        for F in (1, 2, 3):
+            br = sim._mid_branch[F]
+            total = br["to_0"] + br["to_1"] + br["to_L0"] + br["to_L1"]
+            assert total == pytest.approx(1.0, abs=1e-6), f"F={F} ratios sum to {total}"
+
+    def test_rydberg_branching_cross_validation(self):
+        """Rydberg branching ratios should match full_error_model.py."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+        from ryd_gate.full_error_model import jax_atom_Evolution
+
+        sim = CZGateSimulator(param_set="our", strategy="TO")
+        model = jax_atom_Evolution(ryd_decay=False, mid_decay=False)
+
+        assert sim._ryd_branch["to_0"] == pytest.approx(model.branch_ratio_0, abs=1e-6)
+        assert sim._ryd_branch["to_1"] == pytest.approx(model.branch_ratio_1, abs=1e-6)
+        assert sim._ryd_branch["to_L0"] == pytest.approx(model.branch_ratio_L0, abs=1e-6)
+        assert sim._ryd_branch["to_L1"] == pytest.approx(model.branch_ratio_L1, abs=1e-6)
+
+    def test_mid_branching_cross_validation(self):
+        """Mid-state branching ratios should match full_error_model.py."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+        from ryd_gate.full_error_model import jax_atom_Evolution
+
+        sim = CZGateSimulator(param_set="our", strategy="TO")
+        model = jax_atom_Evolution(ryd_decay=False, mid_decay=False)
+
+        for F, label in [(1, "e1"), (2, "e2"), (3, "e3")]:
+            br_sim = sim._mid_branch[F]
+            r0, r1, rL0, rL1 = model.mid_branch_ratio(label)
+            assert br_sim["to_0"] == pytest.approx(r0, abs=1e-6), f"F={F} to_0 mismatch"
+            assert br_sim["to_1"] == pytest.approx(r1, abs=1e-6), f"F={F} to_1 mismatch"
+            assert br_sim["to_L0"] == pytest.approx(rL0, abs=1e-6), f"F={F} to_L0 mismatch"
+            assert br_sim["to_L1"] == pytest.approx(rL1, abs=1e-6), f"F={F} to_L1 mismatch"
+
+    def test_error_budget_non_negative(self):
+        """Error budget values should all be non-negative."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", blackmanflag=True,
+            enable_rydberg_decay=True, enable_intermediate_decay=True,
+        )
+        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
+             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
+        budget = sim.error_budget(x)
+
+        for source, errors in budget.items():
+            for etype, val in errors.items():
+                assert val >= 0, f"{source}/{etype} = {val} is negative"
+
+    def test_error_budget_xyz_al_lg_sum(self):
+        """XYZ + AL + LG should approximately equal total for each source."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", blackmanflag=True,
+            enable_rydberg_decay=True, enable_intermediate_decay=True,
+        )
+        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
+             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
+        budget = sim.error_budget(x)
+
+        for source, errors in budget.items():
+            component_sum = errors["XYZ"] + errors["AL"] + errors["LG"]
+            assert component_sum == pytest.approx(errors["total"], rel=1e-4), \
+                f"{source}: XYZ+AL+LG={component_sum} != total={errors['total']}"
+
+    def test_population_evolution_shapes(self):
+        """Population evolution should return correct shapes and valid values."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", blackmanflag=True,
+            enable_rydberg_decay=True, enable_intermediate_decay=True,
+        )
+        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
+             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
+        pops = sim._population_evolution(x, "01")
+
+        assert pops["t_list"].shape == (1000,)
+        for key in ["e1", "e2", "e3", "ryd", "ryd_garb"]:
+            assert pops[key].shape == (1000,), f"{key} has wrong shape"
+            assert np.all(pops[key] >= -1e-10), f"{key} has negative values"
+            assert np.all(pops[key] <= 1.0 + 1e-10), f"{key} exceeds 1"
