@@ -145,10 +145,6 @@ class CZGateSimulator:
     enable_polarization_leakage : bool, default=False
         Include coupling to the unwanted Rydberg state |r'⟩ (state 6)
         via off-polarization Clebsch-Gordan coefficients.
-    enable_zero_state_scattering : bool, default=False
-        Include off-resonant scattering of |0⟩ through intermediate states
-        via the 420nm laser with physical 6.835 GHz detuning.
-
     Attributes
     ----------
     rabi_eff : float
@@ -215,7 +211,6 @@ class CZGateSimulator:
         enable_rydberg_dephasing: bool = False,
         enable_position_error: bool = False,
         enable_polarization_leakage: bool = False,
-        enable_zero_state_scattering: bool = False,
         sigma_detuning: float | None = None,
         sigma_pos_xyz: tuple[float, float, float] | None = None,
         n_mc_shots: int = 100,
@@ -247,10 +242,6 @@ class CZGateSimulator:
             automatically runs Monte Carlo and returns ``(mean, std)``.
         enable_polarization_leakage : bool
             Include coupling to the unwanted Rydberg state |r'⟩.
-        enable_zero_state_scattering : bool
-            Include off-resonant scattering of |0⟩ through intermediate states.
-            When False, |0⟩ has effectively infinite detuning (no effect).
-            When True, |0⟩ has physical 6.835 GHz detuning.
         sigma_detuning : float or None
             Detuning noise standard deviation in Hz (e.g. 170e3 for 170 kHz).
             Required when ``enable_rydberg_dephasing=True``.
@@ -273,7 +264,6 @@ class CZGateSimulator:
         self.enable_rydberg_dephasing = enable_rydberg_dephasing
         self.enable_position_error = enable_position_error
         self.enable_polarization_leakage = enable_polarization_leakage
-        self.enable_zero_state_scattering = enable_zero_state_scattering
         self.sigma_detuning = sigma_detuning
         self.sigma_pos_xyz = sigma_pos_xyz
         self.n_mc_shots = n_mc_shots
@@ -365,7 +355,7 @@ class CZGateSimulator:
         self.tq_ham_1013 = self._tq_ham_1013_our()
         self.tq_ham_420_conj = self._tq_ham_420_our().conj().T
         self.tq_ham_1013_conj = self._tq_ham_1013_our().conj().T
-        self.tq_ham_lightshift_zero = self._build_zero_state_lightshift()
+
         self.t_rise = 20e-9  # Blackman pulse rise time
 
     def _init_lukin_params(self) -> None:
@@ -420,7 +410,7 @@ class CZGateSimulator:
         self.tq_ham_1013 = self._tq_ham_1013_lukin()
         self.tq_ham_420_conj = self._tq_ham_420_lukin().conj().T
         self.tq_ham_1013_conj = self._tq_ham_1013_lukin().conj().T
-        self.tq_ham_lightshift_zero = self._build_zero_state_lightshift()
+
         self.t_rise = 20e-9  # Blackman pulse rise time
 
     def _setup_protocol_TO(self, x: list[float]) -> None:
@@ -1236,8 +1226,6 @@ class CZGateSimulator:
         H_420_conj = jnp.array(self.tq_ham_420_conj)
         H_1013 = jnp.array(self.tq_ham_1013)
         H_1013_conj = jnp.array(self.tq_ham_1013_conj)
-        H_lightshift = jnp.array(self.tq_ham_lightshift_zero)
-
         # Static coupling sum (time-independent)
         H_1013_sum = H_1013 + H_1013_conj
 
@@ -1337,7 +1325,6 @@ class CZGateSimulator:
                 + amplitude * phase_420 * H_420
                 + amplitude * jnp.conj(phase_420) * H_420_conj
                 + H_1013_sum
-                + amplitude * amplitude * H_lightshift
             )
             return -1j * (H @ y)
 
@@ -1578,7 +1565,8 @@ class CZGateSimulator:
         delta = 0
         middecay = self.mid_state_decay_rate if self.enable_intermediate_decay else 0
         ryddecay = self.ryd_state_decay_rate if self.enable_rydberg_decay else 0
-
+        # |0⟩ state energy (F=1 hyperfine, 6.835 GHz below F=2 in rotation frame)                                                                           
+        ham_sq_mat[0][0] = -2 * np.pi * 6.835e9    
         # Intermediate state energies with hyperfine splitting
         ham_sq_mat[2][2] = self.Delta - 2 * np.pi * 51e6 - 1j * middecay / 2
         ham_sq_mat[3][3] = self.Delta - 1j * middecay / 2
@@ -1625,100 +1613,6 @@ class CZGateSimulator:
         oper_tq = oper_tq + np.kron(oper_sq, np.eye(7))
         return oper_tq
 
-    def _compute_zero_to_mid_couplings(self) -> list[float]:
-        """Compute |0⟩ → |e1⟩, |e2⟩, |e3⟩ couplings for light shift."""
-        if self.param_set == "our":
-            return self._zero_to_mid_couplings_our()
-        return self._zero_to_mid_couplings_lukin()
-
-    def _zero_to_mid_couplings_our(self) -> list[float]:
-        """|0⟩ → |eᵢ⟩ couplings for σ⁻ polarization (our params)."""
-        cg_ratio_main = CG(1 / 2, -1 / 2, 3 / 2, 1 / 2, 1, 0) / CG(
-            1 / 2, -1 / 2, 3 / 2, 1 / 2, 2, 0
-        )
-        cg_ratio_garb = CG(1 / 2, 1 / 2, 3 / 2, -1 / 2, 1, 0) / CG(
-            1 / 2, 1 / 2, 3 / 2, -1 / 2, 2, 0
-        )
-
-        couplings = []
-        for F in (1, 2, 3):
-            g_i = (
-                cg_ratio_main * self.rabi_420 * CG(3 / 2, -3 / 2, 3 / 2, 1 / 2, F, -1)
-                + cg_ratio_garb
-                * self.rabi_420_garbage
-                * CG(3 / 2, -1 / 2, 3 / 2, -1 / 2, F, -1)
-            ) / 2
-            couplings.append(g_i)
-        return couplings
-
-    def _zero_to_mid_couplings_lukin(self) -> list[float]:
-        """|0⟩ → |eᵢ⟩ couplings for σ⁺ polarization (lukin params)."""
-        cg_ratio_main = CG(1 / 2, 1 / 2, 3 / 2, -1 / 2, 1, 0) / CG(
-            1 / 2, 1 / 2, 3 / 2, -1 / 2, 2, 0
-        )
-        cg_ratio_garb = CG(1 / 2, -1 / 2, 3 / 2, 1 / 2, 1, 0) / CG(
-            1 / 2, -1 / 2, 3 / 2, 1 / 2, 2, 0
-        )
-
-        couplings = []
-        for F in (1, 2, 3):
-            g_i = (
-                cg_ratio_main * self.rabi_420 * CG(3 / 2, 3 / 2, 3 / 2, -1 / 2, F, 1)
-                + cg_ratio_garb
-                * self.rabi_420_garbage
-                * CG(3 / 2, 1 / 2, 3 / 2, 1 / 2, F, 1)
-            ) / 2
-            couplings.append(g_i)
-        return couplings
-
-    def _build_zero_state_lightshift(self) -> NDArray[np.complexfloating]:
-        """Build diagonal light-shift Hamiltonian from |0⟩ → |eᵢ⟩ coupling.
-
-        Uses second-order perturbation theory to compute the AC Stark shift
-        on |0⟩ and intermediate states due to off-resonant 420nm coupling.
-        The returned matrix should be multiplied by amplitude(t)² in the ODE.
-
-        The AC Stark shift is **always** included (it is physical reality,
-        not an error source).  When ``enable_zero_state_scattering`` is True,
-        an additional imaginary term is added to |0⟩ representing off-resonant
-        photon scattering (the actual irreversible error):
-
-            Γ_scatter = Σᵢ |g_{0,i}|² γᵢ / Δ_{0,i}²
-
-        Returns
-        -------
-        ndarray
-            Diagonal light-shift matrix of shape (49, 49).
-        """
-        E_0 = -2 * np.pi * 6.835e9
-        mid_energies = np.array(
-            [
-                self.Delta - 2 * np.pi * 51e6,
-                self.Delta,
-                self.Delta + 2 * np.pi * 87e6,
-            ],
-            dtype=np.float64,
-        )
-        couplings = self._compute_zero_to_mid_couplings()
-
-        ls_sq = np.zeros((7, 7), dtype=np.complex128)
-        total_shift = 0.0
-        scatter_rate = 0.0
-        gamma = self.mid_state_decay_rate
-        for idx, (g_i, E_e) in enumerate(zip(couplings, mid_energies), start=2):
-            detuning = E_e - E_0
-            shift = (np.abs(g_i) ** 2) / detuning
-            ls_sq[idx][idx] = shift
-            total_shift += shift
-            scatter_rate += (np.abs(g_i) ** 2) * gamma / (detuning ** 2)
-        ls_sq[0][0] = -total_shift
-
-        if self.enable_zero_state_scattering:
-            ls_sq[0][0] += -1j * scatter_rate / 2
-
-        ls_tq = np.kron(np.eye(7), ls_sq) + np.kron(ls_sq, np.eye(7))
-        return ls_tq
-
     def _tq_ham_420_our(self) -> NDArray[np.complexfloating]:
         """Build 420nm laser coupling Hamiltonian for 'our' parameter set.
 
@@ -1745,6 +1639,26 @@ class CZGateSimulator:
         ham_sq_mat[4][1] = (
             self.rabi_420 * CG(3 / 2, -3 / 2, 3 / 2, 1 / 2, 3, -1)
             + self.rabi_420_garbage * CG(3 / 2, -1 / 2, 3 / 2, -1 / 2, 3, -1)
+        ) / 2
+
+        # |0⟩ → |e1⟩, |e2⟩, |e3⟩ transitions (F=1, mF=0 ground state, σ⁻)
+        cg_ratio_main = CG(1 / 2, -1 / 2, 3 / 2, 1 / 2, 1, 0) / CG(
+            1 / 2, -1 / 2, 3 / 2, 1 / 2, 2, 0
+        )
+        cg_ratio_garb = CG(1 / 2, 1 / 2, 3 / 2, -1 / 2, 1, 0) / CG(
+            1 / 2, 1 / 2, 3 / 2, -1 / 2, 2, 0
+        )
+        ham_sq_mat[2][0] = (
+            cg_ratio_main * self.rabi_420 * CG(3 / 2, -3 / 2, 3 / 2, 1 / 2, 1, -1)
+            + cg_ratio_garb * self.rabi_420_garbage * CG(3 / 2, -1 / 2, 3 / 2, -1 / 2, 1, -1)
+        ) / 2
+        ham_sq_mat[3][0] = (
+            cg_ratio_main * self.rabi_420 * CG(3 / 2, -3 / 2, 3 / 2, 1 / 2, 2, -1)
+            + cg_ratio_garb * self.rabi_420_garbage * CG(3 / 2, -1 / 2, 3 / 2, -1 / 2, 2, -1)
+        ) / 2
+        ham_sq_mat[4][0] = (
+            cg_ratio_main * self.rabi_420 * CG(3 / 2, -3 / 2, 3 / 2, 1 / 2, 3, -1)
+            + cg_ratio_garb * self.rabi_420_garbage * CG(3 / 2, -1 / 2, 3 / 2, -1 / 2, 3, -1)
         ) / 2
 
         ham_tq_mat = ham_tq_mat + np.kron(np.eye(7), ham_sq_mat)
@@ -1808,6 +1722,26 @@ class CZGateSimulator:
         ham_sq_mat[4][1] = (
             self.rabi_420 * CG(3 / 2, 3 / 2, 3 / 2, -1 / 2, 3, 1)
             + self.rabi_420_garbage * CG(3 / 2, 1 / 2, 3 / 2, 1 / 2, 3, 1)
+        ) / 2
+
+        # |0⟩ → |e1⟩, |e2⟩, |e3⟩ transitions (F=1, mF=0 ground state, σ⁺)
+        cg_ratio_main = CG(1 / 2, 1 / 2, 3 / 2, -1 / 2, 1, 0) / CG(
+            1 / 2, 1 / 2, 3 / 2, -1 / 2, 2, 0
+        )
+        cg_ratio_garb = CG(1 / 2, -1 / 2, 3 / 2, 1 / 2, 1, 0) / CG(
+            1 / 2, -1 / 2, 3 / 2, 1 / 2, 2, 0
+        )
+        ham_sq_mat[2][0] = (
+            cg_ratio_main * self.rabi_420 * CG(3 / 2, 3 / 2, 3 / 2, -1 / 2, 1, 1)
+            + cg_ratio_garb * self.rabi_420_garbage * CG(3 / 2, 1 / 2, 3 / 2, 1 / 2, 1, 1)
+        ) / 2
+        ham_sq_mat[3][0] = (
+            cg_ratio_main * self.rabi_420 * CG(3 / 2, 3 / 2, 3 / 2, -1 / 2, 2, 1)
+            + cg_ratio_garb * self.rabi_420_garbage * CG(3 / 2, 1 / 2, 3 / 2, 1 / 2, 2, 1)
+        ) / 2
+        ham_sq_mat[4][0] = (
+            cg_ratio_main * self.rabi_420 * CG(3 / 2, 3 / 2, 3 / 2, -1 / 2, 3, 1)
+            + cg_ratio_garb * self.rabi_420_garbage * CG(3 / 2, 1 / 2, 3 / 2, 1 / 2, 3, 1)
         ) / 2
 
         ham_tq_mat = ham_tq_mat + np.kron(np.eye(7), ham_sq_mat)
@@ -2120,7 +2054,7 @@ class CZGateSimulator:
                 ham_static
                 + amplitude * phase_420 * self.tq_ham_420
                 + amplitude * phase_420_conj * self.tq_ham_420_conj
-                + amplitude * amplitude * self.tq_ham_lightshift_zero
+
             )
             return -1j * ham_tq_mat @ y
 
@@ -2570,7 +2504,7 @@ class CZGateSimulator:
                 ham_static
                 + amplitude * phase_420 * self.tq_ham_420
                 + amplitude * phase_420_conj * self.tq_ham_420_conj
-                + amplitude * amplitude * self.tq_ham_lightshift_zero
+
             )
             return -1j * ham_tq_mat @ y
 

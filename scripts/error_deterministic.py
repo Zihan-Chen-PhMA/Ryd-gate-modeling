@@ -1,8 +1,11 @@
-"""Error budget analysis: one-line API for each error source.
+"""Deterministic error budget: each error source toggled independently.
 
-Demonstrates the CZGateSimulator API where each error source is
-independently toggled via constructor flags. Monte Carlo errors
-(dephasing, position) return (mean_infidelity, std_infidelity).
+Computes infidelity for bright/dark detuning with individual error sources:
+- Perfect gate (baseline)
+- Rydberg decay
+- Intermediate decay (with |0⟩ vs |1⟩ scattering decomposition)
+- Polarization leakage
+- All deterministic combined
 """
 
 from ryd_gate.ideal_cz import CZGateSimulator
@@ -14,7 +17,8 @@ X_TO_OUR_BRIGHT = [
 X_TO_OUR_DARK = [
    -1.7370398295694707, 0.7988774460188806, 2.3116588890406224, 0.5186261498956248, 0.900066116155231, 1.2415235064066774
 ]
-# ==================== Deterministic error sources ====================
+
+# ==================== Perfect gate ====================
 
 sim_nodecay_bright = CZGateSimulator(
         param_set="our", strategy="TO",
@@ -37,8 +41,7 @@ print("Running perfect gate (dark)...")
 inf_perfect_dark = sim_nodecay_dark.gate_fidelity(X_TO_OUR_DARK)
 print(f"Infidelity of perfect gate (dark): {inf_perfect_dark:.6f}")
 
-
-########################################################
+# ==================== Rydberg decay ====================
 
 sim_with_rydberg_decay_bright = CZGateSimulator(
         param_set="our", strategy="TO",
@@ -62,7 +65,7 @@ print("Running with Rydberg decay (dark)...")
 inf_with_rydberg_decay_dark = sim_with_rydberg_decay_dark.gate_fidelity(X_TO_OUR_DARK)
 print(f"Infidelity with Rydberg decay (dark): {inf_with_rydberg_decay_dark:.6f}")
 
-########################################################
+# ==================== Intermediate decay + scattering decomposition ====================
 
 sim_with_intermediate_decay_bright = CZGateSimulator(
         param_set="our", strategy="TO",
@@ -76,11 +79,6 @@ inf_with_intermediate_decay_bright = sim_with_intermediate_decay_bright.gate_fid
 print(f"Infidelity with intermediate decay (bright): {inf_with_intermediate_decay_bright:.6f}")
 
 # Scattering decomposition: |0⟩ vs |1⟩ contributions
-# With enable_intermediate_decay=True, the |0⟩ coupling to intermediates
-# is always included (no separate flag needed).
-# "Scattering |1⟩" = infidelity from |11⟩ input (both atoms in |1⟩)
-# "Scattering* |0⟩" = infidelity from |00⟩ input (both atoms in |0⟩)
-
 print("Computing scattering decomposition (|0⟩ vs |1⟩)...")
 budget_00_bright = sim_with_intermediate_decay_bright.error_budget(X_TO_OUR_BRIGHT, initial_states=["00"])
 budget_11_bright = sim_with_intermediate_decay_bright.error_budget(X_TO_OUR_BRIGHT, initial_states=["11"])
@@ -100,11 +98,6 @@ sim_with_intermediate_decay_dark = CZGateSimulator(
 print("Running with intermediate decay (dark)...")
 inf_with_intermediate_decay_dark = sim_with_intermediate_decay_dark.gate_fidelity(X_TO_OUR_DARK)
 print(f"Infidelity with intermediate decay (dark): {inf_with_intermediate_decay_dark:.6f}")
-# Scattering decomposition: |0⟩ vs |1⟩ contributions
-# With enable_intermediate_decay=True, the |0⟩ coupling to intermediates
-# is always included (no separate flag needed).
-# "Scattering |1⟩" = infidelity from |11⟩ input (both atoms in |1⟩)
-# "Scattering* |0⟩" = infidelity from |00⟩ input (both atoms in |0⟩)
 
 print("Computing scattering decomposition (|0⟩ vs |1⟩)...")
 budget_00_dark = sim_with_intermediate_decay_dark.error_budget(X_TO_OUR_DARK, initial_states=["00"])
@@ -114,7 +107,7 @@ inf_scatter_1_dark = budget_11_dark["intermediate_decay"]["total"]
 print(f"Scattering* |0⟩ (from |00⟩): {inf_scatter_0_dark:.6e}")
 print(f"Scattering |1⟩ (from |11⟩):  {inf_scatter_1_dark:.6e}")
 
-########################################################
+# ==================== Polarization leakage ====================
 
 sim_with_polarization_leakage_bright = CZGateSimulator(
         param_set="our", strategy="TO",
@@ -138,49 +131,7 @@ print("Running with polarization leakage (dark)...")
 inf_with_polarization_leakage_dark = sim_with_polarization_leakage_dark.gate_fidelity(X_TO_OUR_DARK)
 print(f"Infidelity with polarization leakage (dark): {inf_with_polarization_leakage_dark:.6f}")
 
-########################################################
-
-# ==================== Monte Carlo error sources ====================
-
-N_MC = 1000
-
-########################################################
-
-sim_with_dephasing = CZGateSimulator(
-        param_set="our", strategy="TO",
-        blackmanflag=True, detuning_sign=1,
-        enable_rydberg_dephasing=True,
-        sigma_detuning=130e3,  # 130 kHz
-        n_mc_shots=N_MC,
-        mc_seed=42,
-    )
-
-print(f"Running with Rydberg dephasing (sigma_detuning=170 kHz, {N_MC} MC shots)...")
-inf_dephasing = sim_with_dephasing.gate_fidelity(X_TO_OUR_BRIGHT)
-print(f"Infidelity with dephasing: {inf_dephasing[0]:.6f} +/- {inf_dephasing[1]:.6f}")
-print()
-
-########################################################
-
-# NOTE: sigma_pos_xyz in meters. (70e-9, 70e-9, 170e-9) = (70, 70, 170) nm
-# Typical position spread at 15 uK / 50 kHz trap is ~120 nm.
-sigma_pos = (70e-9, 70e-9, 170e-9)  # meters
-
-sim_with_position = CZGateSimulator(
-        param_set="our", strategy="TO",
-        blackmanflag=True, detuning_sign=1,
-        enable_position_error=True,
-        sigma_pos_xyz=sigma_pos,
-        n_mc_shots=N_MC,
-        mc_seed=42,
-    )
-
-print(f"Running with position error (sigma_xyz=(70,70,170) nm, {N_MC} MC shots)...")
-inf_position = sim_with_position.gate_fidelity(X_TO_OUR_BRIGHT)
-print(f"Infidelity with position error: {inf_position[0]:.6f} +/- {inf_position[1]:.6f}")
-print()
-
-########################################################
+# ==================== All deterministic ====================
 
 sim_with_all_deterministic = CZGateSimulator(
         param_set="our", strategy="TO",
@@ -194,30 +145,10 @@ inf_all_det = sim_with_all_deterministic.gate_fidelity(X_TO_OUR_BRIGHT)
 print(f"Infidelity with all deterministic errors: {inf_all_det:.6f}")
 print()
 
-########################################################
-
-sim_with_all_errors = CZGateSimulator(
-        param_set="our", strategy="TO",
-        blackmanflag=True, detuning_sign=1,
-        enable_rydberg_decay=True, enable_intermediate_decay=True,
-        enable_polarization_leakage=True,
-        enable_rydberg_dephasing=True,
-        enable_position_error=True,
-        sigma_detuning=130e3,  # 130 kHz
-        sigma_pos_xyz=sigma_pos,
-        n_mc_shots=N_MC,
-        mc_seed=42,
-    )
-
-print(f"Running with ALL errors (deterministic + MC, {N_MC} shots)...")
-inf_all = sim_with_all_errors.gate_fidelity(X_TO_OUR_BRIGHT)
-print(f"Infidelity with ALL errors: {inf_all[0]:.6f} +/- {inf_all[1]:.6f}")
-print()
-
 # ==================== Summary ====================
 
 print("=" * 65)
-print("ERROR BUDGET SUMMARY")
+print("DETERMINISTIC ERROR BUDGET SUMMARY")
 print("=" * 65)
 print(f"{'Error source':<30} {'Infidelity':>12} {'Contribution':>14}")
 print("-" * 65)
@@ -227,87 +158,12 @@ print(f"{'Rydberg decay (bright)':<30} {inf_with_rydberg_decay_bright:>12.6f} {i
 print(f"{'Rydberg decay (dark)':<30} {inf_with_rydberg_decay_dark:>12.6f} {inf_with_rydberg_decay_dark - inf_perfect_dark:>+14.6f}")
 print(f"{'Intermediate decay (bright)':<30} {inf_with_intermediate_decay_bright:>12.6f} {inf_with_intermediate_decay_bright - inf_perfect_bright:>+14.6f}")
 print(f"{'Intermediate decay (dark)':<30} {inf_with_intermediate_decay_dark:>12.6f} {inf_with_intermediate_decay_dark - inf_perfect_dark:>+14.6f}")
-print(f"{'Polarization leakage (bright)':<30} {inf_with_polarization_leakage_bright:>12.6f} {inf_with_polarization_leakage_bright - inf_perfect_bright:>+14.6f}")
-print(f"{'Polarization leakage (dark)':<30} {inf_with_polarization_leakage_dark:>12.6f} {inf_with_polarization_leakage_dark - inf_perfect_dark:>+14.6f}")
-print(f"{'Scattering* |0⟩ (from 00)':<30} {inf_scatter_0_bright:>12.6e}")
-print(f"{'Scattering |1⟩ (from 11)':<30} {inf_scatter_1_bright:>12.6e}")
-print(f"{'Scattering* |0⟩ (from 00)':<30} {inf_scatter_0_dark:>12.6e}")
-print(f"{'Scattering |1⟩ (from 11)':<30} {inf_scatter_1_dark:>12.6e}")
-print(f"{'Dephasing (130 kHz)':<30} {inf_dephasing[0]:>12.6f} {inf_dephasing[0] - inf_perfect_bright:>+14.6f}")
-print(f"{'Dephasing (130 kHz)':<30} {inf_dephasing[0]:>12.6f} {inf_dephasing[0] - inf_perfect_dark:>+14.6f}")
-print(f"{'Position (70,70,170 nm)':<30} {inf_position[0]:>12.6f} {inf_position[0] - inf_perfect_bright:>+14.6f}")
-print(f"{'Position (70,70,170 nm)':<30} {inf_position[0]:>12.6f} {inf_position[0] - inf_perfect_dark:>+14.6f}")
+print(f"{'  Scattering* |0⟩ bright':<30} {inf_scatter_0_bright:>12.6e}")
+print(f"{'  Scattering |1⟩ bright':<30} {inf_scatter_1_bright:>12.6e}")
+print(f"{'  Scattering* |0⟩ dark':<30} {inf_scatter_0_dark:>12.6e}")
+print(f"{'  Scattering |1⟩ dark':<30} {inf_scatter_1_dark:>12.6e}")
+print(f"{'Polarization leak (bright)':<30} {inf_with_polarization_leakage_bright:>12.6f} {inf_with_polarization_leakage_bright - inf_perfect_bright:>+14.6f}")
+print(f"{'Polarization leak (dark)':<30} {inf_with_polarization_leakage_dark:>12.6f} {inf_with_polarization_leakage_dark - inf_perfect_dark:>+14.6f}")
 print("-" * 65)
 print(f"{'All deterministic (bright)':<30} {inf_all_det:>12.6f} {inf_all_det - inf_perfect_bright:>+14.6f}")
-print(f"{'All deterministic (dark)':<30} {inf_all_det:>12.6f} {inf_all_det - inf_perfect_dark:>+14.6f}")
-print(f"{'ALL errors (bright)':<30} {inf_all[0]:>12.6f} {inf_all[0] - inf_perfect_bright:>+14.6f}")
-print(f"{'ALL errors (dark)':<30} {inf_all[0]:>12.6f} {inf_all[0] - inf_perfect_dark:>+14.6f}")
 print("=" * 65)
-
-# ==================== Error Type Breakdown for bright(XYZ / AL / LG) ====================
-
-print()
-print("=" * 80)
-print("ERROR TYPE BREAKDOWN for bright (XYZ / AL / LG) — using branching ratios")
-print("=" * 80)
-
-SSS_LABELS = [f"SSS-{i}" for i in range(12)]
-
-sim_budget = CZGateSimulator(
-    param_set="our", strategy="TO",
-    blackmanflag=True, detuning_sign=1,
-    enable_rydberg_decay=True, enable_intermediate_decay=True,
-    enable_polarization_leakage=False,
-)
-
-print("Computing error budget with branching ratios (12 SSS states)...")
-budget = sim_budget.error_budget(X_TO_OUR_BRIGHT, initial_states=SSS_LABELS)
-
-# Add non-decay error sources to the table
-# Polarization leakage → all LG
-pol_contribution = inf_with_polarization_leakage_bright - inf_perfect_bright
-budget["polarization_leakage"] = {
-    "total": pol_contribution,
-    "XYZ": 0.0,
-    "AL": 0.0,
-    "LG": pol_contribution,
-}
-
-# Dephasing → all XYZ
-deph_contribution = inf_dephasing[0] - inf_perfect_bright
-budget["T2*_dephasing"] = {
-    "total": deph_contribution,
-    "XYZ": deph_contribution,
-    "AL": 0.0,
-    "LG": 0.0,
-}
-
-# Position error → all XYZ
-pos_contribution = inf_position[0] - inf_perfect_bright
-budget["position_error"] = {
-    "total": pos_contribution,
-    "XYZ": pos_contribution,
-    "AL": 0.0,
-    "LG": 0.0,
-}
-
-print(f"\n{'Error source':<25} {'Total':>10} {'XYZ':>10} {'AL':>10} {'LG':>10}")
-print("-" * 80)
-total_xyz = 0.0
-total_al = 0.0
-total_lg = 0.0
-for source, errors in budget.items():
-    print(
-        f"{source:<25} {errors['total']:>10.2e} "
-        f"{errors['XYZ']:>10.2e} {errors['AL']:>10.2e} {errors['LG']:>10.2e}"
-    )
-    total_xyz += errors["XYZ"]
-    total_al += errors["AL"]
-    total_lg += errors["LG"]
-grand_total = total_xyz + total_al + total_lg
-print("-" * 80)
-print(
-    f"{'TOTAL':<25} {grand_total:>10.2e} "
-    f"{total_xyz:>10.2e} {total_al:>10.2e} {total_lg:>10.2e}"
-)
-print("=" * 80)

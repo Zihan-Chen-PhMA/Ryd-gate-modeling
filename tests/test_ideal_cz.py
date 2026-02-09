@@ -663,72 +663,27 @@ class TestIndependentErrorFlags:
         assert sim.rabi_420_garbage != 0.0
         assert sim.rabi_1013_garbage != 0.0
 
-    def test_zero_state_scattering_flag_off_near_perfect(self):
-        """Optimized params (with always-on light shift) should give near-perfect gate."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(
-            param_set="our", strategy="TO", blackmanflag=True,
-            enable_zero_state_scattering=False,
-        )
-        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
-             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
-        infidelity = sim.gate_fidelity(x)
-        assert infidelity < 1e-6, f"Infidelity {infidelity} too large with optimized params"
-
-    def test_zero_state_lightshift_matrix(self):
-        """Light-shift matrix should always have nonzero real diagonal (always-on)."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim_on = CZGateSimulator(param_set="our", enable_zero_state_scattering=True)
-        sim_off = CZGateSimulator(param_set="our", enable_zero_state_scattering=False)
-        diag_on = np.diag(sim_on.tq_ham_lightshift_zero)
-        diag_off = np.diag(sim_off.tq_ham_lightshift_zero)
-
-        # AC Stark shift is always present (real part)
-        assert np.any(diag_on.real != 0), "Should have nonzero real light shifts"
-        assert np.any(diag_off.real != 0), "Light shift should be present even with flag off"
-        # Real parts should match (same AC Stark shift)
-        assert np.allclose(diag_on.real, diag_off.real)
-        # Flag ON adds imaginary scattering loss on |0⟩; flag OFF is purely real
-        assert np.allclose(diag_off.imag, 0), "Flag off should have no imaginary part"
-        assert np.any(diag_on.imag != 0), "Flag on should have imaginary scattering loss"
-        # |1,1⟩ should remain unshifted (no |1⟩ light shift contribution)
-        idx_11 = 1 * 7 + 1
-        assert diag_on[idx_11] == 0
-
-    def test_zero_state_lightshift_signs(self):
-        """|0⟩ should shift downward, |eᵢ⟩ should shift upward (our params)."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(param_set="our")
-        diag = np.diag(sim.tq_ham_lightshift_zero)
-        # Extract single-atom shifts from two-atom diagonal entries
-        s0 = diag[0 * 7 + 1]  # |0,1⟩ = s0 + s1 (s1=0)
-        s2 = diag[2 * 7 + 1]  # |e1,1⟩ = s2
-        s3 = diag[3 * 7 + 1]  # |e2,1⟩ = s3
-        s4 = diag[4 * 7 + 1]  # |e3,1⟩ = s4
-
-        assert s0.real < 0, "Expected negative |0⟩ light shift"
-        assert s2.real > 0, "Expected positive |e1⟩ light shift"
-        assert s3.real > 0, "Expected positive |e2⟩ light shift"
-        assert s4.real > 0, "Expected positive |e3⟩ light shift"
-
-    def test_zero_state_lightshift_no_coupling_in_h420(self):
-        """420nm Hamiltonian should not directly couple |0⟩ to |eᵢ⟩."""
+    def test_zero_state_coupling_in_h420(self):
+        """420nm Hamiltonian should directly couple |0⟩ to |eᵢ⟩."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         for param_set in ("our", "lukin"):
-            sim_on = CZGateSimulator(
-                param_set=param_set, enable_zero_state_scattering=True,
-            )
-            sim_off = CZGateSimulator(
-                param_set=param_set, enable_zero_state_scattering=False,
-            )
-            for sim in (sim_on, sim_off):
-                ham = sim.tq_ham_420
-                for ei in (2, 3, 4):
-                    assert ham[ei, 0] == 0, f"|0⟩→|e{ei-1}⟩ coupling should be zero ({param_set})"
+            sim = CZGateSimulator(param_set=param_set)
+            ham = sim.tq_ham_420
+            for ei in (2, 3, 4):
+                assert ham[ei, 0] != 0, f"|0⟩→|e{ei-1}⟩ coupling should be nonzero ({param_set})"
+
+    def test_zero_state_energy_offset(self):
+        """|0⟩ should have -2π×6.835 GHz energy in tq_ham_const."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(param_set="our")
+        diag = np.diag(sim.tq_ham_const)
+        # |0,1⟩ state at index 0*7+1: only |0⟩ energy contributes (|1⟩ = 0)
+        expected_E0 = -2 * np.pi * 6.835e9
+        s0 = diag[0 * 7 + 1]
+        assert s0.real == pytest.approx(expected_E0, rel=1e-10), \
+            f"|0⟩ energy {s0.real} != expected {expected_E0}"
 
     def test_all_flags_off_hermitian_hamiltonian(self):
         """All flags off should produce a purely real-diagonal, Hermitian Hamiltonian."""
