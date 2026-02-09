@@ -176,3 +176,29 @@ print("-" * 65)
 print(f"{'All deterministic':<30} {inf_all_det:>12.6f} {inf_all_det - inf_perfect:>+14.6f}")
 print(f"{'ALL errors':<30} {inf_all[0]:>12.6f} {inf_all[0] - inf_perfect:>+14.6f}")
 print("=" * 65)
+
+# ==================== Error Type Breakdown ====================
+
+print()
+print("=" * 65)
+print("ERROR TYPE BREAKDOWN (XYZ / AL / LG)")
+print("=" * 65)
+
+sim_budget = CZGateSimulator(
+    param_set="our", strategy="TO",
+    blackmanflag=True, detuning_sign=1,
+    enable_rydberg_decay=True, enable_intermediate_decay=True,
+    enable_polarization_leakage=False,
+)
+
+print("Computing error budget with branching ratios...")
+budget = sim_budget.error_budget(X_TO_OUR_BRIGHT)
+
+print(f"\n{'Error source':<25} {'Total':>10} {'XYZ':>10} {'AL':>10} {'LG':>10}")
+print("-" * 65)
+for source, errors in budget.items():
+    print(
+        f"{source:<25} {errors['total']:>10.2e} "
+        f"{errors['XYZ']:>10.2e} {errors['AL']:>10.2e} {errors['LG']:>10.2e}"
+    )
+print("=" * 65)
