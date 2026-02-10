@@ -746,11 +746,11 @@ class CZGateSimulator:
             )
         if self.strategy == "TO":
             if fid_type == "sss":
-                return self.fidelity_sss(x)
+                return self._fidelity_sss(x)
             elif fid_type == "bell":
-                return self.fidelity_bell(x)
+                return self._fidelity_bell(x)
             elif fid_type == "average":
-                return self.fidelity_avg(x, return_residuals=return_residuals)
+                return self._fidelity_avg(x, return_residuals=return_residuals)
         elif self.strategy == "AR":
             if fid_type == "average":
                 return self._avg_fidelity_AR(x, return_residuals=return_residuals)
@@ -847,8 +847,13 @@ class CZGateSimulator:
         Returns
         -------
         dict
-            Nested dict with keys for each error source, each containing
-            'total', 'XYZ', 'AL', 'LG' values (averaged over initial states).
+            Nested dict with keys ``'rydberg_decay'``,
+            ``'intermediate_decay'``, and ``'polarization_leakage'``,
+            each containing 'total', 'XYZ', 'AL', 'LG' values
+            (averaged over initial states).  The polarization leakage
+            channel decomposes the garbage Rydberg state (index 6)
+            using the same cascade branching ratios as the main
+            Rydberg state.
         """
         x = self._resolve_params(x, "error_budget")
         if initial_states is None:
@@ -858,6 +863,7 @@ class CZGateSimulator:
         budget_accum = {
             "rydberg_decay": {"XYZ": 0.0, "AL": 0.0, "LG": 0.0},
             "intermediate_decay": {"XYZ": 0.0, "AL": 0.0, "LG": 0.0},
+            "polarization_leakage": {"XYZ": 0.0, "AL": 0.0, "LG": 0.0},
         }
 
         for init_state in initial_states:
@@ -876,8 +882,8 @@ class CZGateSimulator:
             bbr_decay = self._decay_integrate(
                 t_list, ryd_occ, self.ryd_BBR_rate,
             )[0, -1]
-            # Residual Rydberg population at gate end → AL
-            ryd_residual = ryd_occ[-1] + ryd_garb_occ[-1]
+            # Residual main Rydberg population at gate end → AL
+            ryd_residual = ryd_occ[-1]
 
             br = self._ryd_branch
             xyz_frac = br["to_0"] + br["to_1"]
@@ -886,6 +892,20 @@ class CZGateSimulator:
             budget_accum["rydberg_decay"]["XYZ"] += rd_decay * xyz_frac
             budget_accum["rydberg_decay"]["LG"] += rd_decay * lg_frac
             budget_accum["rydberg_decay"]["AL"] += bbr_decay + ryd_residual
+
+            # --- Polarization leakage (garbage Rydberg, index 6) ---
+            # Same RD/BBR split and branching as main Rydberg (same level)
+            garb_rd_decay = self._decay_integrate(
+                t_list, ryd_garb_occ, self.ryd_RD_rate,
+            )[0, -1]
+            garb_bbr_decay = self._decay_integrate(
+                t_list, ryd_garb_occ, self.ryd_BBR_rate,
+            )[0, -1]
+            garb_residual = ryd_garb_occ[-1]
+
+            budget_accum["polarization_leakage"]["XYZ"] += garb_rd_decay * xyz_frac
+            budget_accum["polarization_leakage"]["LG"] += garb_rd_decay * lg_frac
+            budget_accum["polarization_leakage"]["AL"] += garb_bbr_decay + garb_residual
 
             # --- Intermediate decay ---
             # Per-level: e1(F=1,idx=2), e2(F=2,idx=3), e3(F=3,idx=4)
@@ -1004,11 +1024,11 @@ class CZGateSimulator:
 
         return result
 
-    def fidelity_sss(self, x: list[float]) -> float:
+    def _fidelity_sss(self, x: list[float]) -> float:
         """Average state infidelity over 12 SSS states."""
         return sum(self.state_infidelity(f"SSS-{i}", x) for i in range(12)) / 12
 
-    def fidelity_bell(self, x: list[float]) -> float:
+    def _fidelity_bell(self, x: list[float]) -> float:
         """Average state infidelity over 4 Bell states."""
         s0 = np.array([1, 0, 0, 0, 0, 0, 0], dtype=complex)
         s1 = np.array([0, 1, 0, 0, 0, 0, 0], dtype=complex)
@@ -1044,14 +1064,51 @@ class CZGateSimulator:
         if initial_state is None:
             raise ValueError("initial_state is required.")
         x = self._resolve_params(x, "diagnose_plot")
+        population_evolution = self.diagnose_run(x, initial_state)
+
         if self.strategy == "TO":
-            return self._diagnose_plot_TO(x, initial_state)
+            t_gate = x[5] * self.time_scale
         elif self.strategy == "AR":
-            return self._diagnose_plot_AR(x, initial_state)
+            t_gate = x[6] * self.time_scale
         else:
             raise ValueError(
                 f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
             )
+
+        time_axis_ns = np.linspace(0, t_gate * 1e9, len(population_evolution[0]))
+
+        plt.style.use("seaborn-v0_8-whitegrid")
+        _fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(
+            time_axis_ns,
+            population_evolution[0],
+            label=f"Intermediate states population for |{initial_state}⟩ state",
+            lw=2,
+        )
+        ax.plot(
+            time_axis_ns,
+            population_evolution[1],
+            label="Rydberg state |r⟩ population",
+            linestyle="--",
+            lw=2,
+        )
+        ax.plot(
+            time_axis_ns,
+            population_evolution[2],
+            label="Unwanted Rydberg |r'⟩ population",
+            linestyle=":",
+            lw=2,
+        )
+        ax.set_title(
+            f"Population Evolution During CPHASE Gate ({self.strategy})",
+            fontsize=16,
+        )
+        ax.set_xlabel("Time (ns)", fontsize=12)
+        ax.set_ylabel("Population Probability", fontsize=12)
+        ax.legend(loc="best", fontsize=10)
+        plt.tight_layout()
+        plt.savefig(f"population_{self.strategy}_{initial_state}.png")
+        plt.show()
 
     def diagnose_run(
         self,
@@ -1077,14 +1134,9 @@ class CZGateSimulator:
         if initial_state is None:
             raise ValueError("initial_state is required.")
         x = self._resolve_params(x, "diagnose_run")
-        if self.strategy == "TO":
-            return self._diagnose_run_TO(x, initial_state)
-        elif self.strategy == "AR":
-            return self._diagnose_run_AR(x, initial_state)
-        else:
-            raise ValueError(
-                f"Unknown strategy: '{self.strategy}'. Choose 'TO' or 'AR'."
-            )
+        pops = self._population_evolution(x, initial_state)
+        mid = pops["e1"] + pops["e2"] + pops["e3"]
+        return [mid, pops["ryd"], pops["ryd_garb"]]
 
     def plot_bloch(self, x: list[float] | None = None, save: bool = True) -> None:
         """Generate Bloch sphere visualization for key transitions.
@@ -1717,86 +1769,6 @@ class CZGateSimulator:
         self.tq_ham_const = self.tq_ham_const + delta_v * ham_vdw_unit
         self.v_ryd = v_ryd_new
 
-    def get_error_budget(
-        self,
-        x: list[float],
-        n_shots: int = 1000,
-        sigma_detuning: float | None = None,
-        sigma_pos_xyz: tuple[float, float, float] | None = None,
-        seed: int | None = None,
-    ) -> dict[str, float]:
-        """Compute error budget breakdown for the CZ gate.
-
-        Runs separate Monte Carlo simulations to isolate contributions
-        from different error sources, similar to Extended Data Fig. 4
-        from arXiv:2305.03406.
-
-        Parameters
-        ----------
-        x : list of float
-            Pulse parameters.
-        n_shots : int, default=1000
-            Number of Monte Carlo shots per error source.
-        sigma_detuning : float or None
-            Detuning noise standard deviation in Hz (e.g. 130e3).
-        sigma_pos_xyz : tuple of 3 floats or None
-            Position noise ``(sigma_x, sigma_y, sigma_z)`` in meters.
-        seed : int or None, default=None
-            Random seed for reproducibility.
-
-        Returns
-        -------
-        dict
-            Error budget with keys:
-            - 'ideal_infidelity': Infidelity without noise
-            - 'dephasing_infidelity': Infidelity with only dephasing
-            - 'position_infidelity': Infidelity with only position fluctuations
-            - 'total_infidelity': Infidelity with both error sources
-            - 'dephasing_contribution': Isolated dephasing contribution
-            - 'position_contribution': Isolated position contribution
-        """
-        # Ideal (no noise)
-        ideal_infidelity = self._gate_infidelity_single(x)
-
-        # Dephasing only
-        result_deph = self.run_monte_carlo_simulation(
-            x,
-            n_shots=n_shots,
-            sigma_detuning=sigma_detuning,
-            sigma_pos_xyz=None,
-            seed=seed,
-        )
-
-        # Position fluctuations only
-        result_pos = self.run_monte_carlo_simulation(
-            x,
-            n_shots=n_shots,
-            sigma_detuning=None,
-            sigma_pos_xyz=sigma_pos_xyz,
-            seed=seed + 1 if seed else None,
-        )
-
-        # Both error sources
-        result_both = self.run_monte_carlo_simulation(
-            x,
-            n_shots=n_shots,
-            sigma_detuning=sigma_detuning,
-            sigma_pos_xyz=sigma_pos_xyz,
-            seed=seed + 2 if seed else None,
-        )
-
-        return {
-            "ideal_infidelity": ideal_infidelity,
-            "dephasing_infidelity": result_deph.mean_infidelity,
-            "dephasing_std": result_deph.std_infidelity,
-            "position_infidelity": result_pos.mean_infidelity,
-            "position_std": result_pos.std_infidelity,
-            "total_infidelity": result_both.mean_infidelity,
-            "total_std": result_both.std_infidelity,
-            "dephasing_contribution": result_deph.mean_infidelity - ideal_infidelity,
-            "position_contribution": result_pos.mean_infidelity - ideal_infidelity,
-        }
-
     # ==================================================================
     # HAMILTONIAN CONSTRUCTION
     # ==================================================================
@@ -2397,7 +2369,7 @@ class CZGateSimulator:
             return np.array(result.y)
         return np.array(result.y[:, -1])
 
-    def fidelity_avg(
+    def _fidelity_avg(
         self, x: list[float], return_residuals: bool = False,
     ) -> "float | tuple[float, dict[str, float]]":
         """Calculate average gate infidelity for TO parameters.
@@ -2476,7 +2448,6 @@ class CZGateSimulator:
             residuals = {key: val / 2.0 for key, val in residuals_accum.items()}
             return float(infidelity), residuals
 
-        print(f"Average Fidelity: {avg_F}")
         return infidelity
 
     def _optimization_TO(self, fid_type, x: list[float] = None) -> object:
@@ -2498,11 +2469,11 @@ class CZGateSimulator:
         if x is None:
             x = self.x_initial
         if fid_type == "average":
-            raw_objective = self.fidelity_avg
+            raw_objective = self._fidelity_avg
         if fid_type == "bell":
-            raw_objective = self.fidelity_bell
+            raw_objective = self._fidelity_bell
         if fid_type == "sss":
-            raw_objective = self.fidelity_sss
+            raw_objective = self._fidelity_sss
 
         cache = {}
 
@@ -2537,128 +2508,6 @@ class CZGateSimulator:
         )
         print(f"The final optimized protocol is: {optimres.x.tolist()}, with infidelity: {optimres.fun}")
         return optimres
-
-    def _diagnose_run_TO(
-        self, x: list[float], initial: InitialStateLabel,
-    ) -> list[NDArray[np.floating]]:
-        """Run TO simulation and return population time series.
-
-        Parameters
-        ----------
-        x : list of float
-            TO parameters [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale].
-        initial : str
-            Initial two-qubit state. Supports computational basis states
-            ('00', '01', '10', '11') and SSS states ('SSS-0' through 'SSS-11').
-
-        Returns
-        -------
-        list of ndarray
-            [mid_state_pop, ryd_state_pop, ryd_garb_pop] arrays.
-        """
-        sss_states = self._build_sss_state_map()
-        if initial not in sss_states:
-            raise ValueError(f"Unsupported initial state: '{initial}'")
-        ini_state = sss_states[initial]
-
-        t_gate = x[5] * self.time_scale
-        # res_list[:, t] stores state at time t_gate * t/999
-        res_list = self._get_gate_result_TO(
-            phase_amp=x[0],
-            omega=x[1] * self.rabi_eff,
-            phase_init=x[2],
-            delta=x[3] * self.rabi_eff,
-            t_gate=t_gate,
-            state_mat=ini_state,
-            t_eval=np.linspace(0, t_gate, 1000),
-        )
-
-        mid_state_occ_oper = (
-            self._occ_operator(2) + self._occ_operator(3) + self._occ_operator(4)
-        )
-        ryd_state_occ_oper = self._occ_operator(5)
-        ryd_garb_state_occ_oper = self._occ_operator(6)
-
-        mid_state_list = []
-        ryd_state_list = []
-        ryd_garb_list = []
-
-        for col in range(len(res_list[0, :])):
-            state_temp = res_list[:, col]
-            mid_state_occ_temp = np.dot(
-                np.conjugate(state_temp),
-                np.reshape(
-                    np.matmul(mid_state_occ_oper, np.reshape(state_temp, (-1, 1))), (-1)
-                ),
-            )
-            ryd_state_occ_temp = np.dot(
-                np.conjugate(state_temp),
-                np.reshape(
-                    np.matmul(ryd_state_occ_oper, np.reshape(state_temp, (-1, 1))), (-1)
-                ),
-            )
-            ryd_garb_occ_temp = np.dot(
-                np.conjugate(state_temp),
-                np.reshape(
-                    np.matmul(ryd_garb_state_occ_oper, np.reshape(state_temp, (-1, 1))),
-                    (-1),
-                ),
-            )
-            mid_state_list.append(np.abs(mid_state_occ_temp))
-            ryd_state_list.append(np.abs(ryd_state_occ_temp))
-            ryd_garb_list.append(np.abs(ryd_garb_occ_temp))
-
-        return [
-            np.array(mid_state_list),
-            np.array(ryd_state_list),
-            np.array(ryd_garb_list),
-        ]
-
-    def _diagnose_plot_TO(
-        self, x: list[float], initial: InitialStateLabel,
-    ) -> None:
-        """Generate population evolution plot for TO strategy.
-
-        Parameters
-        ----------
-        x : list of float
-            TO parameters.
-        initial : str
-            Initial state label.
-        """
-        population_evolution = self._diagnose_run_TO(x, initial)
-        t_gate = x[5] * self.time_scale
-        time_axis_ns = np.linspace(0, t_gate * 1e9, len(population_evolution[0]))
-
-        plt.style.use("seaborn-v0_8-whitegrid")
-        _fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(
-            time_axis_ns,
-            population_evolution[0],
-            label=f"Intermediate states population for |{initial}⟩ state",
-            lw=2,
-        )
-        ax.plot(
-            time_axis_ns,
-            population_evolution[1],
-            label="Rydberg state |r⟩ population",
-            linestyle="--",
-            lw=2,
-        )
-        ax.plot(
-            time_axis_ns,
-            population_evolution[2],
-            label="Unwanted Rydberg |r'⟩ population",
-            linestyle=":",
-            lw=2,
-        )
-        ax.set_title("Population Evolution During CPHASE Gate (TO)", fontsize=16)
-        ax.set_xlabel("Time (ns)", fontsize=12)
-        ax.set_ylabel("Population Probability", fontsize=12)
-        ax.legend(loc="best", fontsize=10)
-        plt.tight_layout()
-        plt.savefig(f"population_TO_{initial}.png")
-        plt.show()
 
     def _plotBloch_TO(self, x: list[float], saveflag: bool = True) -> None:
         """Generate Bloch sphere plots for TO strategy.
@@ -3020,127 +2869,3 @@ class CZGateSimulator:
         print(f"The final optimized protocol is: {optimres.x.tolist()}, with infidelity: {optimres.fun}")
         return optimres
 
-    def _diagnose_run_AR(
-        self, x: list[float], initial: InitialStateLabel,
-    ) -> list[NDArray[np.floating]]:
-        """Run AR simulation and return population time series.
-
-        Parameters
-        ----------
-        x : list of float
-            AR parameters [ω/Ω_eff, A₁, φ₁, A₂, φ₂, δ/Ω_eff, T/T_scale, θ].
-        initial : str
-            Initial two-qubit state. Supports computational basis states
-            ('00', '01', '10', '11') and SSS states ('SSS-0' through 'SSS-11').
-
-        Returns
-        -------
-        list of ndarray
-            [mid_state_pop, ryd_state_pop, ryd_garb_pop] arrays.
-        """
-        sss_states = self._build_sss_state_map()
-        if initial not in sss_states:
-            raise ValueError(f"Unsupported initial state: '{initial}'")
-        ini_state = sss_states[initial]
-
-        t_gate = x[6] * self.time_scale
-        # res_list[:, t] stores state at time t_gate * t/999
-        res_list = self._get_gate_result_AR(
-            omega=x[0] * self.rabi_eff,
-            phase_amp1=x[1],
-            phase_init1=x[2],
-            phase_amp2=x[3],
-            phase_init2=x[4],
-            delta=x[5] * self.rabi_eff,
-            t_gate=t_gate,
-            state_mat=ini_state,
-            t_eval=np.linspace(0, t_gate, 1000),
-        )
-
-        mid_state_occ_oper = (
-            self._occ_operator(2) + self._occ_operator(3) + self._occ_operator(4)
-        )
-        ryd_state_occ_oper = self._occ_operator(5)
-        ryd_garb_state_occ_oper = self._occ_operator(6)
-
-        mid_state_list = []
-        ryd_state_list = []
-        ryd_garb_list = []
-
-        for col in range(len(res_list[0, :])):
-            state_temp = res_list[:, col]
-            mid_state_occ_temp = np.dot(
-                np.conjugate(state_temp),
-                np.reshape(
-                    np.matmul(mid_state_occ_oper, np.reshape(state_temp, (-1, 1))), (-1)
-                ),
-            )
-            ryd_state_occ_temp = np.dot(
-                np.conjugate(state_temp),
-                np.reshape(
-                    np.matmul(ryd_state_occ_oper, np.reshape(state_temp, (-1, 1))), (-1)
-                ),
-            )
-            ryd_garb_occ_temp = np.dot(
-                np.conjugate(state_temp),
-                np.reshape(
-                    np.matmul(ryd_garb_state_occ_oper, np.reshape(state_temp, (-1, 1))),
-                    (-1),
-                ),
-            )
-            mid_state_list.append(np.abs(mid_state_occ_temp))
-            ryd_state_list.append(np.abs(ryd_state_occ_temp))
-            ryd_garb_list.append(np.abs(ryd_garb_occ_temp))
-
-        return [
-            np.array(mid_state_list),
-            np.array(ryd_state_list),
-            np.array(ryd_garb_list),
-        ]
-
-    def _diagnose_plot_AR(
-        self, x: list[float], initial: InitialStateLabel,
-    ) -> None:
-        """Generate population evolution plot for AR strategy.
-
-        Parameters
-        ----------
-        x : list of float
-            AR parameters.
-        initial : str
-            Initial state label. Supports '00', '01', '10', '11'
-            and 'SSS-0' through 'SSS-11'.
-        """
-        population_evolution = self._diagnose_run_AR(x, initial)
-        t_gate = x[6] * self.time_scale
-        time_axis_ns = np.linspace(0, t_gate * 1e9, len(population_evolution[0]))
-
-        plt.style.use("seaborn-v0_8-whitegrid")
-        _fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(
-            time_axis_ns,
-            population_evolution[0],
-            label=f"Intermediate states population for |{initial}⟩ state",
-            lw=2,
-        )
-        ax.plot(
-            time_axis_ns,
-            population_evolution[1],
-            label="Rydberg state |r⟩ population",
-            linestyle="--",
-            lw=2,
-        )
-        ax.plot(
-            time_axis_ns,
-            population_evolution[2],
-            label="Unwanted Rydberg |r'⟩ population",
-            linestyle=":",
-            lw=2,
-        )
-        ax.set_title("Population Evolution During CPHASE Gate (AR)", fontsize=16)
-        ax.set_xlabel("Time (ns)", fontsize=12)
-        ax.set_ylabel("Population Probability", fontsize=12)
-        ax.legend(loc="best", fontsize=10)
-        plt.tight_layout()
-        plt.savefig(f"population_AR_{initial}.png")
-        plt.show()

@@ -6,6 +6,9 @@ Usage:
 """
 
 import argparse
+import os
+
+os.environ["JAX_PLATFORMS"] = "cpu"
 
 import numpy as np
 

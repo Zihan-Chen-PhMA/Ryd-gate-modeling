@@ -19,9 +19,11 @@ X_TO_OUR_BRIGHT =[
 # [1.9792338119200394, 0.8805904859802784, -0.38840789469712256, -1.040280411129939, 3.275909805658351, 1.3583544348458325]
 sim_perfect = CZGateSimulator(
         param_set="our", strategy="TO",
-        blackmanflag=True, detuning_sign=1,
+        blackmanflag=True, detuning_sign=-1,
         enable_rydberg_decay=False, enable_intermediate_decay=False,
         enable_polarization_leakage=False,
     )
+res = sim_perfect.gate_fidelity(X_TO_OUR_BRIGHT)
+print(res)
 sim_perfect.optimize(x_initial=X_TO_OUR_BRIGHT, fid_type="average")
 # 

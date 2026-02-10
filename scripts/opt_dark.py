@@ -22,4 +22,7 @@ sim_dark = CZGateSimulator(
         enable_rydberg_decay=False, enable_intermediate_decay=False,
         enable_polarization_leakage=False,
     ) 
+
+res = sim_dark.gate_fidelity(X_TO_OUR_DARK)
+print(res)
 sim_dark.optimize(x_initial=X_TO_OUR_DARK, fid_type="average")

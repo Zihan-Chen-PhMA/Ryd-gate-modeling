@@ -860,6 +860,44 @@ class TestBranchingRatios:
             assert np.all(pops[key] >= -1e-10), f"{key} has negative values"
             assert np.all(pops[key] <= 1.0 + 1e-10), f"{key} exceeds 1"
 
+    def test_error_budget_polarization_leakage_channel(self):
+        """Polarization leakage channel should be non-negative and self-consistent."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", blackmanflag=True,
+            enable_rydberg_decay=True, enable_intermediate_decay=True,
+            enable_polarization_leakage=True,
+        )
+        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
+             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
+        budget = sim.error_budget(x)
+
+        assert "polarization_leakage" in budget
+        pol = budget["polarization_leakage"]
+        for etype, val in pol.items():
+            assert val >= -1e-15, f"polarization_leakage/{etype} = {val} is negative"
+        component_sum = pol["XYZ"] + pol["AL"] + pol["LG"]
+        assert component_sum == pytest.approx(pol["total"], rel=1e-4)
+
+    def test_error_budget_polarization_leakage_zero_when_disabled(self):
+        """Polarization leakage channel should be ~0 when flag is off."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", blackmanflag=True,
+            enable_rydberg_decay=True, enable_intermediate_decay=True,
+            enable_polarization_leakage=False,
+        )
+        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
+             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
+        budget = sim.error_budget(x)
+
+        for etype in ["XYZ", "AL", "LG", "total"]:
+            assert budget["polarization_leakage"][etype] == pytest.approx(
+                0.0, abs=1e-12,
+            ), f"polarization_leakage/{etype} should be ~0 when disabled"
+
 
 # ==================================================================
 # TESTS FOR MONTE CARLO BRANCHING
@@ -936,7 +974,7 @@ class TestMonteCarloWithBranching:
         sim = CZGateSimulator(
             param_set="our", strategy="TO", blackmanflag=True,
         )
-        infid_new, residuals = sim.fidelity_avg(X_TO_OUR, return_residuals=True)
+        infid_new, residuals = sim._fidelity_avg(X_TO_OUR, return_residuals=True)
         # Optimized gate should have low infidelity
         assert infid_new < 1e-4
         # Residuals dict structure
@@ -993,7 +1031,7 @@ class TestMonteCarloWithBranching:
             param_set="our", strategy="TO", blackmanflag=True,
             enable_rydberg_decay=True, enable_intermediate_decay=True,
         )
-        _, residuals = sim.fidelity_avg(X_TO_OUR, return_residuals=True)
+        _, residuals = sim._fidelity_avg(X_TO_OUR, return_residuals=True)
         branching = sim._residuals_to_branching(residuals)
         assert branching["XYZ"] >= 0
         assert branching["AL"] >= 0
