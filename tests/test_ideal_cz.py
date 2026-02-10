@@ -663,27 +663,34 @@ class TestIndependentErrorFlags:
         assert sim.rabi_420_garbage != 0.0
         assert sim.rabi_1013_garbage != 0.0
 
-    def test_zero_state_coupling_in_h420(self):
-        """420nm Hamiltonian should directly couple |0⟩ to |eᵢ⟩."""
+    def test_zero_state_no_coupling_in_h420(self):
+        """420nm Hamiltonian should NOT directly couple |0⟩ to |eᵢ⟩ (perturbative)."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
         for param_set in ("our", "lukin"):
             sim = CZGateSimulator(param_set=param_set)
             ham = sim.tq_ham_420
             for ei in (2, 3, 4):
-                assert ham[ei, 0] != 0, f"|0⟩→|e{ei-1}⟩ coupling should be nonzero ({param_set})"
+                assert ham[ei, 0] == 0, f"|0⟩→|e{ei-1}⟩ should be zero in H_420 ({param_set})"
 
-    def test_zero_state_energy_offset(self):
-        """|0⟩ should have -2π×6.835 GHz energy in tq_ham_const."""
+    def test_zero_state_lightshift_scattering_gated_by_flag(self):
+        """Scattering on |0⟩ should be gated by enable_intermediate_decay."""
         from ryd_gate.ideal_cz import CZGateSimulator
 
-        sim = CZGateSimulator(param_set="our")
-        diag = np.diag(sim.tq_ham_const)
-        # |0,1⟩ state at index 0*7+1: only |0⟩ energy contributes (|1⟩ = 0)
-        expected_E0 = -2 * np.pi * 6.835e9
-        s0 = diag[0 * 7 + 1]
-        assert s0.real == pytest.approx(expected_E0, rel=1e-10), \
-            f"|0⟩ energy {s0.real} != expected {expected_E0}"
+        sim_off = CZGateSimulator(param_set="our", enable_intermediate_decay=False)
+        sim_on = CZGateSimulator(param_set="our", enable_intermediate_decay=True)
+        diag_off = np.diag(sim_off.tq_ham_lightshift_zero)
+        diag_on = np.diag(sim_on.tq_ham_lightshift_zero)
+
+        # AC Stark shift (real) always present regardless of flag
+        assert np.any(diag_off.real != 0), "Should have nonzero real light shifts"
+        assert np.allclose(diag_off.real, diag_on.real), "Real shifts should match"
+        # Flag off: no imaginary scattering
+        assert np.allclose(diag_off.imag, 0), "Flag off should have no scattering"
+        # Flag on: imaginary scattering on |0⟩
+        s0_on = diag_on[0 * 7 + 1]
+        assert s0_on.real < 0, "Expected negative |0⟩ light shift"
+        assert s0_on.imag < 0, "Expected negative imaginary (scattering loss) on |0⟩"
 
     def test_all_flags_off_hermitian_hamiltonian(self):
         """All flags off should produce a purely real-diagonal, Hermitian Hamiltonian."""
