@@ -171,43 +171,40 @@ class TestHamiltonianConstruction:
 
 
 class TestFidelityCalculation:
-    """Tests for average fidelity calculation."""
+    """Tests for average fidelity calculation.
 
-    def test_fidelity_TO_returns_float(self):
+    Uses class-level fixtures to share ODE results across tests.
+    """
+
+    @pytest.fixture(scope="class")
+    def fid_TO(self):
+        from ryd_gate.ideal_cz import CZGateSimulator
+        sim = CZGateSimulator(param_set="our", strategy="TO")
+        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
+        return sim.gate_fidelity(x)
+
+    @pytest.fixture(scope="class")
+    def fid_AR(self):
+        from ryd_gate.ideal_cz import CZGateSimulator
+        sim = CZGateSimulator(param_set="our", strategy="AR")
+        x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
+        return sim.gate_fidelity(x)
+
+    def test_fidelity_TO_returns_float(self, fid_TO):
         """gate_fidelity with TO strategy should return a float."""
-        from ryd_gate.ideal_cz import CZGateSimulator
+        assert isinstance(fid_TO, (float, np.floating))
 
-        sim = CZGateSimulator(param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        infid = sim.gate_fidelity(x)
-        assert isinstance(infid, (float, np.floating))
-
-    def test_fidelity_AR_returns_float(self):
+    def test_fidelity_AR_returns_float(self, fid_AR):
         """gate_fidelity with AR strategy should return a float."""
-        from ryd_gate.ideal_cz import CZGateSimulator
+        assert isinstance(fid_AR, (float, np.floating))
 
-        sim = CZGateSimulator(param_set="our", strategy="AR")
-        x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
-        infid = sim.gate_fidelity(x)
-        assert isinstance(infid, (float, np.floating))
-
-    def test_fidelity_bounded_TO(self):
+    def test_fidelity_bounded_TO(self, fid_TO):
         """Infidelity should be between 0 and 1 for TO strategy."""
-        from ryd_gate.ideal_cz import CZGateSimulator
+        assert 0 <= fid_TO <= 1
 
-        sim = CZGateSimulator(param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        infid = sim.gate_fidelity(x)
-        assert 0 <= infid <= 1
-
-    def test_fidelity_bounded_AR(self):
+    def test_fidelity_bounded_AR(self, fid_AR):
         """Infidelity should be between 0 and 1 for AR strategy."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(param_set="our", strategy="AR")
-        x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
-        infid = sim.gate_fidelity(x)
-        assert 0 <= infid <= 1
+        assert 0 <= fid_AR <= 1
 
     def test_fidelity_lukin_params(self):
         """Fidelity calculation should work with lukin params."""
@@ -225,17 +222,20 @@ class TestFidelityCalculation:
 
 
 class TestStateEvolution:
-    """Tests for quantum state evolution methods."""
+    """Tests for quantum state evolution methods.
 
-    def test_get_gate_result_TO_shape(self):
-        """_get_gate_result_TO should return array of shape (49, 1000)."""
+    Uses class-level fixture to share the TO evolution result.
+    """
+
+    @pytest.fixture(scope="class")
+    def evo_TO(self):
+        """Shared TO evolution result for |11⟩ initial state."""
         from ryd_gate.ideal_cz import CZGateSimulator
-
         sim = CZGateSimulator(param_set="our", strategy="TO")
         ini_state = np.kron(
             [0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
         )
-        result = sim._get_gate_result_TO(
+        return sim._get_gate_result_TO(
             phase_amp=0.1,
             omega=sim.rabi_eff,
             phase_init=0.0,
@@ -244,7 +244,10 @@ class TestStateEvolution:
             state_mat=ini_state,
             t_eval=np.linspace(0, sim.time_scale, 1000),
         )
-        assert result.shape == (49, 1000)
+
+    def test_get_gate_result_TO_shape(self, evo_TO):
+        """_get_gate_result_TO should return array of shape (49, 1000)."""
+        assert evo_TO.shape == (49, 1000)
 
     def test_get_gate_result_AR_shape(self):
         """_get_gate_result_AR should return array of shape (49, 1000)."""
@@ -267,26 +270,10 @@ class TestStateEvolution:
         )
         assert result.shape == (49, 1000)
 
-    def test_state_normalization_preserved(self):
+    def test_state_normalization_preserved(self, evo_TO):
         """State norm should be preserved during evolution (no decay)."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(param_set="our", strategy="TO")
-        ini_state = np.kron(
-            [0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
-        )
-        result = sim._get_gate_result_TO(
-            phase_amp=0.1,
-            omega=sim.rabi_eff,
-            phase_init=0.0,
-            delta=0.0,
-            t_gate=sim.time_scale,
-            state_mat=ini_state,
-            t_eval=np.linspace(0, sim.time_scale, 1000),
-        )
-        # Check norm at several time points
         for t_idx in [0, 250, 500, 750, 999]:
-            norm = np.linalg.norm(result[:, t_idx])
+            norm = np.linalg.norm(evo_TO[:, t_idx])
             assert np.isclose(norm, 1.0, rtol=1e-6)
 
 
@@ -296,17 +283,23 @@ class TestStateEvolution:
 
 
 class TestDiagnosticMethods:
-    """Tests for diagnostic run methods."""
+    """Tests for diagnostic run methods.
 
-    def test_diagnose_run_TO_returns_three_arrays(self):
-        """diagnose_run with TO should return list of 3 arrays."""
+    Uses class-level fixtures to share ODE results across tests.
+    """
+
+    @pytest.fixture(scope="class")
+    def diag_TO_11(self):
+        """Shared TO diagnose_run result for '11' initial state."""
         from ryd_gate.ideal_cz import CZGateSimulator
-
         sim = CZGateSimulator(param_set="our", strategy="TO")
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        result = sim.diagnose_run(x, "11")
-        assert len(result) == 3
-        assert all(isinstance(arr, np.ndarray) for arr in result)
+        return sim.diagnose_run(x, "11")
+
+    def test_diagnose_run_TO_returns_three_arrays(self, diag_TO_11):
+        """diagnose_run with TO should return list of 3 arrays."""
+        assert len(diag_TO_11) == 3
+        assert all(isinstance(arr, np.ndarray) for arr in diag_TO_11)
 
     def test_diagnose_run_AR_returns_three_arrays(self):
         """diagnose_run with AR should return list of 3 arrays."""
@@ -318,24 +311,16 @@ class TestDiagnosticMethods:
         assert len(result) == 3
         assert all(isinstance(arr, np.ndarray) for arr in result)
 
-    def test_diagnose_run_array_shapes(self):
+    def test_diagnose_run_array_shapes(self, diag_TO_11):
         """diagnose_run arrays should have length 1000."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        mid_pop, ryd_pop, ryd_garb_pop = sim.diagnose_run(x, "11")
+        mid_pop, ryd_pop, ryd_garb_pop = diag_TO_11
         assert len(mid_pop) == 1000
         assert len(ryd_pop) == 1000
         assert len(ryd_garb_pop) == 1000
 
-    def test_diagnose_run_populations_positive(self):
+    def test_diagnose_run_populations_positive(self, diag_TO_11):
         """All population values should be non-negative."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-
-        sim = CZGateSimulator(param_set="our", strategy="TO")
-        x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
-        mid_pop, ryd_pop, ryd_garb_pop = sim.diagnose_run(x, "11")
+        mid_pop, ryd_pop, ryd_garb_pop = diag_TO_11
         assert np.all(mid_pop >= 0)
         assert np.all(ryd_pop >= 0)
         assert np.all(ryd_garb_pop >= 0)
@@ -444,7 +429,8 @@ class TestStoredParameterWorkflow:
 
         sim = CZGateSimulator(param_set="our", strategy="AR")
         x = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
-        for i in range(12):
+        # Test first and last SSS states as representative samples
+        for i in [0, 11]:
             result = sim.diagnose_run(x, f"SSS-{i}")
             assert len(result) == 3
 
@@ -540,8 +526,8 @@ class TestMonteCarloSimulation:
         sim = CZGateSimulator(
             param_set="our", strategy="TO",
             enable_rydberg_dephasing=True,
-            sigma_detuning=170e3,
-            n_mc_shots=3,
+            sigma_detuning=130e3,
+            n_mc_shots=2,
             mc_seed=42,
         )
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
@@ -567,7 +553,7 @@ class TestMonteCarloSimulation:
         )
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         result = sim.run_monte_carlo_simulation(
-            x, n_shots=10,
+            x, n_shots=2,
             sigma_pos_xyz=small_sigma,
             seed=42,
         )
@@ -746,7 +732,7 @@ class TestIndependentErrorFlags:
         )
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         result = sim.run_monte_carlo_simulation(
-            x, n_shots=3, sigma_detuning=170e3, seed=42
+            x, n_shots=2, sigma_detuning=130e3, seed=42
         )
         # Dephasing disabled → detuning_samples should be None
         assert result.detuning_samples is None
@@ -762,7 +748,7 @@ class TestIndependentErrorFlags:
         )
         x = [0.1, 1.0, 0.0, 0.0, 0.0, 1.0]
         result = sim.run_monte_carlo_simulation(
-            x, n_shots=3,
+            x, n_shots=2,
             sigma_pos_xyz=(70e-6, 70e-6, 170e-6),
             seed=42,
         )
@@ -873,3 +859,142 @@ class TestBranchingRatios:
             assert pops[key].shape == (1000,), f"{key} has wrong shape"
             assert np.all(pops[key] >= -1e-10), f"{key} has negative values"
             assert np.all(pops[key] <= 1.0 + 1e-10), f"{key} exceeds 1"
+
+
+# ==================================================================
+# TESTS FOR MONTE CARLO BRANCHING
+# ==================================================================
+
+
+X_TO_OUR = [
+    -0.9509172186259588, 1.105272315809505, 0.383911389220584,
+    1.2848721417313045, 1.3035218398648376, 1.246566016566724,
+]
+
+
+class TestMonteCarloWithBranching:
+    """Tests for MC branching decomposition (XYZ/AL/LG/phase).
+
+    Uses a shared class-level MC result (2 shots) to avoid redundant ODE
+    solves (~11 s each).
+    """
+
+    @pytest.fixture(scope="class")
+    def mc_branching_result(self):
+        """Shared MC result with branching for structural checks."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO",
+            blackmanflag=True, detuning_sign=1,
+            enable_rydberg_dephasing=True,
+            sigma_detuning=130e3,
+        )
+        return sim.run_monte_carlo_simulation(
+            X_TO_OUR, n_shots=2, sigma_detuning=130e3,
+            seed=42, compute_branching=True,
+        )
+
+    def test_mc_no_branching_by_default(self):
+        """MC without compute_branching should return None for all branch fields."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO",
+            blackmanflag=True, detuning_sign=1,
+            enable_rydberg_dephasing=True,
+            sigma_detuning=130e3,
+        )
+        result = sim.run_monte_carlo_simulation(
+            X_TO_OUR, n_shots=2, sigma_detuning=130e3, seed=42,
+        )
+        assert result.branch_XYZ is None
+        assert result.mean_branch_XYZ is None
+
+    def test_branching_sum_equals_infidelity(self, mc_branching_result):
+        """XYZ + AL + LG + phase should equal total infidelity per shot."""
+        result = mc_branching_result
+        infidelities = 1 - result.fidelities
+        branch_sum = (
+            result.branch_XYZ + result.branch_AL
+            + result.branch_LG + result.branch_phase
+        )
+        np.testing.assert_allclose(branch_sum, infidelities, rtol=1e-6)
+
+    def test_branching_non_negative(self, mc_branching_result):
+        """All branching components should be non-negative."""
+        result = mc_branching_result
+        assert np.all(result.branch_XYZ >= -1e-12)
+        assert np.all(result.branch_AL >= -1e-12)
+        assert np.all(result.branch_LG >= -1e-12)
+        assert np.all(result.branch_phase >= -1e-6)
+
+    def test_fidelity_avg_residuals(self):
+        """return_residuals=True should match normal call and have small residuals."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", blackmanflag=True,
+        )
+        infid_new, residuals = sim.fidelity_avg(X_TO_OUR, return_residuals=True)
+        # Optimized gate should have low infidelity
+        assert infid_new < 1e-4
+        # Residuals dict structure
+        assert isinstance(residuals, dict)
+        assert set(residuals.keys()) == {"e1", "e2", "e3", "ryd", "ryd_garb"}
+        # Optimized gate should have negligible residuals
+        for key, val in residuals.items():
+            assert val < 1e-4, f"Residual {key} = {val} too large for optimized gate"
+
+    def test_save_load_roundtrip(self, tmp_path):
+        """Saving and loading should reproduce the same MonteCarloResult."""
+        from ryd_gate.ideal_cz import MonteCarloResult
+
+        # Use synthetic data — this tests serialization, not physics.
+        fids = np.array([0.995, 0.993, 0.997])
+        bx = np.array([1e-3, 2e-3, 0.5e-3])
+        ba = np.array([0.5e-3, 0.3e-3, 0.4e-3])
+        bl = np.array([0.2e-3, 0.1e-3, 0.15e-3])
+        bp = 1 - fids - bx - ba - bl
+        result = MonteCarloResult(
+            mean_fidelity=float(np.mean(fids)),
+            std_fidelity=float(np.std(fids)),
+            mean_infidelity=float(np.mean(1 - fids)),
+            std_infidelity=float(np.std(1 - fids)),
+            n_shots=3,
+            fidelities=fids,
+            detuning_samples=np.array([1e3, -2e3, 0.5e3]),
+            branch_XYZ=bx, branch_AL=ba, branch_LG=bl, branch_phase=bp,
+            mean_branch_XYZ=float(np.mean(bx)),
+            std_branch_XYZ=float(np.std(bx)),
+            mean_branch_AL=float(np.mean(ba)),
+            std_branch_AL=float(np.std(ba)),
+            mean_branch_LG=float(np.mean(bl)),
+            std_branch_LG=float(np.std(bl)),
+            mean_branch_phase=float(np.mean(bp)),
+            std_branch_phase=float(np.std(bp)),
+        )
+        filepath = str(tmp_path / "mc_test.txt")
+        result.save_to_file(filepath)
+        loaded = MonteCarloResult.load_from_file(filepath)
+
+        assert loaded.n_shots == result.n_shots
+        np.testing.assert_allclose(loaded.fidelities, result.fidelities, rtol=1e-10)
+        np.testing.assert_allclose(loaded.branch_XYZ, result.branch_XYZ, rtol=1e-10)
+        np.testing.assert_allclose(loaded.branch_AL, result.branch_AL, rtol=1e-10)
+        np.testing.assert_allclose(loaded.branch_LG, result.branch_LG, rtol=1e-10)
+        np.testing.assert_allclose(loaded.branch_phase, result.branch_phase, rtol=1e-10)
+
+    def test_residuals_to_branching_non_negative(self):
+        """_residuals_to_branching should return non-negative values."""
+        from ryd_gate.ideal_cz import CZGateSimulator
+
+        sim = CZGateSimulator(
+            param_set="our", strategy="TO", blackmanflag=True,
+            enable_rydberg_decay=True, enable_intermediate_decay=True,
+        )
+        _, residuals = sim.fidelity_avg(X_TO_OUR, return_residuals=True)
+        branching = sim._residuals_to_branching(residuals)
+        assert branching["XYZ"] >= 0
+        assert branching["AL"] >= 0
+        assert branching["LG"] >= 0

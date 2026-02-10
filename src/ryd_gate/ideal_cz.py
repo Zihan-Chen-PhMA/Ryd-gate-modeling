@@ -66,6 +66,30 @@ class MonteCarloResult:
         Sampled detuning errors (rad/s) if T2* dephasing was enabled.
     distance_samples : NDArray[np.floating] | None
         Sampled interatomic distances (μm) if position fluctuations were enabled.
+    branch_XYZ : NDArray[np.floating] | None
+        Per-shot XYZ (Pauli) error from residual populations.
+    branch_AL : NDArray[np.floating] | None
+        Per-shot atom loss error from residual Rydberg populations.
+    branch_LG : NDArray[np.floating] | None
+        Per-shot leakage error from residual populations.
+    branch_phase : NDArray[np.floating] | None
+        Per-shot phase error (infidelity minus population-based errors).
+    mean_branch_XYZ : float | None
+        Mean XYZ error across all shots.
+    std_branch_XYZ : float | None
+        Std of XYZ error across all shots.
+    mean_branch_AL : float | None
+        Mean atom loss error across all shots.
+    std_branch_AL : float | None
+        Std of atom loss error across all shots.
+    mean_branch_LG : float | None
+        Mean leakage error across all shots.
+    std_branch_LG : float | None
+        Std of leakage error across all shots.
+    mean_branch_phase : float | None
+        Mean phase error across all shots.
+    std_branch_phase : float | None
+        Std of phase error across all shots.
     """
 
     mean_fidelity: float
@@ -76,6 +100,140 @@ class MonteCarloResult:
     fidelities: "NDArray[np.floating]"
     detuning_samples: "NDArray[np.floating] | None" = None
     distance_samples: "NDArray[np.floating] | None" = None
+    branch_XYZ: "NDArray[np.floating] | None" = None
+    branch_AL: "NDArray[np.floating] | None" = None
+    branch_LG: "NDArray[np.floating] | None" = None
+    branch_phase: "NDArray[np.floating] | None" = None
+    mean_branch_XYZ: "float | None" = None
+    std_branch_XYZ: "float | None" = None
+    mean_branch_AL: "float | None" = None
+    std_branch_AL: "float | None" = None
+    mean_branch_LG: "float | None" = None
+    std_branch_LG: "float | None" = None
+    mean_branch_phase: "float | None" = None
+    std_branch_phase: "float | None" = None
+
+    def save_to_file(self, filepath: str) -> None:
+        """Save Monte Carlo results to a text file.
+
+        File format: ``#``-prefixed header with metadata, then tab-separated
+        data with one row per shot.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to the output text file.
+        """
+        import datetime
+
+        with open(filepath, "w") as f:
+            f.write(f"# MonteCarloResult saved {datetime.datetime.now().isoformat()}\n")
+            f.write(f"# n_shots = {self.n_shots}\n")
+            f.write(f"# mean_fidelity = {self.mean_fidelity:.12e}\n")
+            f.write(f"# std_fidelity = {self.std_fidelity:.12e}\n")
+            f.write(f"# mean_infidelity = {self.mean_infidelity:.12e}\n")
+            f.write(f"# std_infidelity = {self.std_infidelity:.12e}\n")
+
+            if self.mean_branch_XYZ is not None:
+                f.write(f"# mean_branch_XYZ = {self.mean_branch_XYZ:.12e}\n")
+                f.write(f"# std_branch_XYZ = {self.std_branch_XYZ:.12e}\n")
+                f.write(f"# mean_branch_AL = {self.mean_branch_AL:.12e}\n")
+                f.write(f"# std_branch_AL = {self.std_branch_AL:.12e}\n")
+                f.write(f"# mean_branch_LG = {self.mean_branch_LG:.12e}\n")
+                f.write(f"# std_branch_LG = {self.std_branch_LG:.12e}\n")
+                f.write(f"# mean_branch_phase = {self.mean_branch_phase:.12e}\n")
+                f.write(f"# std_branch_phase = {self.std_branch_phase:.12e}\n")
+
+            columns = ["shot", "fidelity", "infidelity"]
+            if self.detuning_samples is not None:
+                columns.append("detuning_sample")
+            if self.distance_samples is not None:
+                columns.append("distance_sample")
+            if self.branch_XYZ is not None:
+                columns.extend(["branch_XYZ", "branch_AL", "branch_LG", "branch_phase"])
+
+            f.write(f"# columns: {' '.join(columns)}\n")
+
+            for i in range(self.n_shots):
+                row = [
+                    str(i),
+                    f"{self.fidelities[i]:.12e}",
+                    f"{1 - self.fidelities[i]:.12e}",
+                ]
+                if self.detuning_samples is not None:
+                    row.append(f"{self.detuning_samples[i]:.12e}")
+                if self.distance_samples is not None:
+                    row.append(f"{self.distance_samples[i]:.12e}")
+                if self.branch_XYZ is not None:
+                    row.append(f"{self.branch_XYZ[i]:.12e}")
+                    row.append(f"{self.branch_AL[i]:.12e}")
+                    row.append(f"{self.branch_LG[i]:.12e}")
+                    row.append(f"{self.branch_phase[i]:.12e}")
+                f.write("\t".join(row) + "\n")
+
+    @classmethod
+    def load_from_file(cls, filepath: str) -> "MonteCarloResult":
+        """Load Monte Carlo results from a text file saved by :meth:`save_to_file`.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to the input text file.
+
+        Returns
+        -------
+        MonteCarloResult
+        """
+        column_names: list[str] = []
+        data_rows: list[list[str]] = []
+
+        with open(filepath) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("# columns:"):
+                    column_names = line.split(":", 1)[1].strip().split()
+                elif line.startswith("#"):
+                    continue
+                elif line:
+                    data_rows.append(line.split("\t"))
+
+        n_shots = len(data_rows)
+        data = np.array([[float(v) for v in row] for row in data_rows])
+        col_idx = {name: i for i, name in enumerate(column_names)}
+
+        fidelities = data[:, col_idx["fidelity"]]
+
+        kwargs: dict = dict(
+            mean_fidelity=float(np.mean(fidelities)),
+            std_fidelity=float(np.std(fidelities)),
+            mean_infidelity=float(np.mean(1 - fidelities)),
+            std_infidelity=float(np.std(1 - fidelities)),
+            n_shots=n_shots,
+            fidelities=fidelities,
+        )
+
+        if "detuning_sample" in col_idx:
+            kwargs["detuning_samples"] = data[:, col_idx["detuning_sample"]]
+        if "distance_sample" in col_idx:
+            kwargs["distance_samples"] = data[:, col_idx["distance_sample"]]
+        if "branch_XYZ" in col_idx:
+            bx = data[:, col_idx["branch_XYZ"]]
+            ba = data[:, col_idx["branch_AL"]]
+            bl = data[:, col_idx["branch_LG"]]
+            bp = data[:, col_idx["branch_phase"]]
+            kwargs.update(
+                branch_XYZ=bx, branch_AL=ba, branch_LG=bl, branch_phase=bp,
+                mean_branch_XYZ=float(np.mean(bx)),
+                std_branch_XYZ=float(np.std(bx)),
+                mean_branch_AL=float(np.mean(ba)),
+                std_branch_AL=float(np.std(ba)),
+                mean_branch_LG=float(np.mean(bl)),
+                std_branch_LG=float(np.std(bl)),
+                mean_branch_phase=float(np.mean(bp)),
+                std_branch_phase=float(np.std(bp)),
+            )
+
+        return cls(**kwargs)
 
 
 # ==================================================================
@@ -566,21 +724,36 @@ class CZGateSimulator:
         self,
         x: list[float],
         fid_type: Literal["average", "sss", "bell"] = "average",
-    ) -> float:
+        return_residuals: bool = False,
+    ) -> "float | tuple[float, dict[str, float]]":
         """Compute single-shot gate infidelity (no MC averaging).
 
         This is the deterministic computation used per-shot by MC methods.
+
+        Parameters
+        ----------
+        x : list of float
+            Pulse parameters.
+        fid_type : str
+            Fidelity metric type.
+        return_residuals : bool, default=False
+            If True, return (infidelity, residuals_dict) instead of float.
+            Only supported for fid_type='average'.
         """
+        if return_residuals and fid_type != "average":
+            raise ValueError(
+                "return_residuals is only supported for fid_type='average'."
+            )
         if self.strategy == "TO":
             if fid_type == "sss":
                 return self.fidelity_sss(x)
             elif fid_type == "bell":
                 return self.fidelity_bell(x)
             elif fid_type == "average":
-                return self.fidelity_avg(x)
+                return self.fidelity_avg(x, return_residuals=return_residuals)
         elif self.strategy == "AR":
             if fid_type == "average":
-                return self._avg_fidelity_AR(x)
+                return self._avg_fidelity_AR(x, return_residuals=return_residuals)
             else:
                 raise ValueError(
                     f"Fidelity type '{fid_type}' is not implemented for AR strategy. "
@@ -1075,6 +1248,7 @@ class CZGateSimulator:
         sigma_detuning: float | None = None,
         sigma_pos_xyz: tuple[float, float, float] | None = None,
         seed: int | None = None,
+        compute_branching: bool = False,
     ) -> MonteCarloResult:
         """Run quasi-static Monte Carlo simulation for error budget analysis.
 
@@ -1102,12 +1276,16 @@ class CZGateSimulator:
             Set to None to disable position fluctuations.
         seed : int or None, default=None
             Random seed for reproducibility.
+        compute_branching : bool, default=False
+            If True, decompose per-shot infidelity into XYZ/AL/LG/phase
+            channels using branching ratios and residual populations.
 
         Returns
         -------
         MonteCarloResult
             Dataclass containing mean/std fidelity and infidelity,
-            plus per-shot samples.
+            plus per-shot samples. When compute_branching=True, also
+            contains per-shot and summary branching statistics.
         """
         # Initialize RNG
         rng = np.random.default_rng(seed)
@@ -1138,8 +1316,23 @@ class CZGateSimulator:
         detuning_samples = np.zeros(n_shots) if sigma_delta_rad else None
         distance_samples = np.zeros(n_shots) if use_position else None
 
+        if compute_branching:
+            branch_xyz_arr = np.zeros(n_shots)
+            branch_al_arr = np.zeros(n_shots)
+            branch_lg_arr = np.zeros(n_shots)
+            branch_phase_arr = np.zeros(n_shots)
+
         # Run Monte Carlo loop
         for shot in range(n_shots):
+            # Progress indicator
+            if n_shots >= 5:
+                pct = (shot + 1) * 100 // n_shots
+                prev_pct = shot * 100 // n_shots
+                if shot == 0 or pct != prev_pct:
+                    print(
+                        f"\r  MC shot {shot + 1}/{n_shots} ({pct}%)",
+                        end="", flush=True,
+                    )
             # Reset Hamiltonian to original
             self.tq_ham_const = original_ham_const.copy()
             self.v_ryd = original_v_ryd
@@ -1170,10 +1363,26 @@ class CZGateSimulator:
                 self._apply_interaction_perturbation(d_new, ham_vdw_unit)
 
             # Compute fidelity for this shot
-            infidelity = self._gate_infidelity_single(x)
-            fidelities[shot] = 1.0 - infidelity
+            if compute_branching:
+                infidelity, residuals = self._gate_infidelity_single(
+                    x, return_residuals=True,
+                )
+                fidelities[shot] = 1.0 - infidelity
+                branching = self._residuals_to_branching(residuals)
+                branch_xyz_arr[shot] = branching["XYZ"]
+                branch_al_arr[shot] = branching["AL"]
+                branch_lg_arr[shot] = branching["LG"]
+                branch_phase_arr[shot] = max(
+                    infidelity - (branching["XYZ"] + branching["AL"] + branching["LG"]),
+                    0.0,
+                )
+            else:
+                infidelity = self._gate_infidelity_single(x)
+                fidelities[shot] = 1.0 - infidelity
 
         # Restore original state
+        if n_shots >= 5:
+            print(f"\r  MC done: {n_shots}/{n_shots} (100%)    ")
         self.tq_ham_const = original_ham_const
         self.v_ryd = original_v_ryd
 
@@ -1182,7 +1391,7 @@ class CZGateSimulator:
         std_fid = float(np.std(fidelities))
         infidelities = 1.0 - fidelities
 
-        return MonteCarloResult(
+        kwargs = dict(
             mean_fidelity=mean_fid,
             std_fidelity=std_fid,
             mean_infidelity=float(np.mean(infidelities)),
@@ -1192,6 +1401,24 @@ class CZGateSimulator:
             detuning_samples=detuning_samples,
             distance_samples=distance_samples,
         )
+
+        if compute_branching:
+            kwargs.update(
+                branch_XYZ=branch_xyz_arr,
+                branch_AL=branch_al_arr,
+                branch_LG=branch_lg_arr,
+                branch_phase=branch_phase_arr,
+                mean_branch_XYZ=float(np.mean(branch_xyz_arr)),
+                std_branch_XYZ=float(np.std(branch_xyz_arr)),
+                mean_branch_AL=float(np.mean(branch_al_arr)),
+                std_branch_AL=float(np.std(branch_al_arr)),
+                mean_branch_LG=float(np.mean(branch_lg_arr)),
+                std_branch_LG=float(np.std(branch_lg_arr)),
+                mean_branch_phase=float(np.mean(branch_phase_arr)),
+                std_branch_phase=float(np.std(branch_phase_arr)),
+            )
+
+        return MonteCarloResult(**kwargs)
 
     def run_monte_carlo_jax(
         self,
@@ -1636,6 +1863,40 @@ class CZGateSimulator:
         oper_tq = oper_tq + np.kron(np.eye(7), oper_sq)
         oper_tq = oper_tq + np.kron(oper_sq, np.eye(7))
         return oper_tq
+
+    def _residuals_to_branching(
+        self, residuals: dict[str, float],
+    ) -> dict[str, float]:
+        """Convert per-level residual populations to XYZ/AL/LG error components.
+
+        Uses branching ratios to decompose residual populations into error
+        channels, following the same logic as ``error_budget()``.
+
+        Parameters
+        ----------
+        residuals : dict
+            Keys: 'e1', 'e2', 'e3', 'ryd', 'ryd_garb' with float values.
+
+        Returns
+        -------
+        dict
+            Keys: 'XYZ', 'AL', 'LG' with float values.
+        """
+        xyz = 0.0
+        al = 0.0
+        lg = 0.0
+
+        # Rydberg residual: population stuck in |r⟩ or |r'⟩ at gate end = atom loss
+        al += residuals["ryd"] + residuals["ryd_garb"]
+
+        # Mid-state residuals: decompose by branching ratios
+        for F, key in [(1, "e1"), (2, "e2"), (3, "e3")]:
+            mid_res = residuals[key]
+            mbr = self._mid_branch[F]
+            xyz += mid_res * (mbr["to_0"] + mbr["to_1"])
+            lg += mid_res * (mbr["to_L0"] + mbr["to_L1"])
+
+        return {"XYZ": xyz, "AL": al, "LG": lg}
 
     def _build_zero_state_lightshift(self) -> NDArray[np.complexfloating]:
         """Build perturbative light-shift Hamiltonian from |0⟩ → |eᵢ⟩ coupling.
@@ -2136,7 +2397,9 @@ class CZGateSimulator:
             return np.array(result.y)
         return np.array(result.y[:, -1])
 
-    def fidelity_avg(self, x: list[float]) -> float:
+    def fidelity_avg(
+        self, x: list[float], return_residuals: bool = False,
+    ) -> "float | tuple[float, dict[str, float]]":
         """Calculate average gate infidelity for TO parameters.
 
         Computes overlap with ideal CZ gate for |01⟩ and |11⟩ initial states
@@ -2146,13 +2409,28 @@ class CZGateSimulator:
         ----------
         x : list of float
             TO parameters [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale].
+        return_residuals : bool, default=False
+            If True, also return per-level residual populations averaged
+            over |01⟩ and |11⟩ initial states.
 
         Returns
         -------
-        float
-            Average gate infidelity (1 - F).
+        float or (float, dict)
+            If return_residuals is False: average gate infidelity (1 - F).
+            If True: (infidelity, residuals) where residuals has keys
+            'e1', 'e2', 'e3', 'ryd', 'ryd_garb'.
         """
         theta = x[4]
+
+        if return_residuals:
+            occ_ops = {
+                "e1": self._occ_operator(2),
+                "e2": self._occ_operator(3),
+                "e3": self._occ_operator(4),
+                "ryd": self._occ_operator(5),
+                "ryd_garb": self._occ_operator(6),
+            }
+            residuals_accum = {key: 0.0 for key in occ_ops}
 
         # Compute |01⟩ → |01⟩ overlap
         ini_state = np.kron(
@@ -2168,6 +2446,10 @@ class CZGateSimulator:
         )
         a01 = np.exp(-1.0j * theta) * ini_state.conj().dot(res.T)
 
+        if return_residuals:
+            for key, op in occ_ops.items():
+                residuals_accum[key] += np.real(res.conj() @ op @ res)
+
         # Compute |11⟩ → -|11⟩ overlap (CZ applies π phase)
         ini_state = np.kron(
             [0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
@@ -2182,10 +2464,20 @@ class CZGateSimulator:
         )
         a11 = np.exp(-2.0j * theta - 1.0j * np.pi) * ini_state.conj().dot(res.T)
 
+        if return_residuals:
+            for key, op in occ_ops.items():
+                residuals_accum[key] += np.real(res.conj() @ op @ res)
+
         # Average gate fidelity formula
         avg_F = (1 / 20) * (abs(1 + 2 * a01 + a11) ** 2 + 1 + 2 * abs(a01) ** 2 + abs(a11) ** 2)
+        infidelity = 1 - avg_F
+
+        if return_residuals:
+            residuals = {key: val / 2.0 for key, val in residuals_accum.items()}
+            return float(infidelity), residuals
+
         print(f"Average Fidelity: {avg_F}")
-        return 1 - avg_F
+        return infidelity
 
     def _optimization_TO(self, fid_type, x: list[float] = None) -> object:
         """Run Nelder-Mead optimization for TO pulse parameters.
@@ -2586,20 +2878,36 @@ class CZGateSimulator:
             return np.array(result.y)
         return np.array(result.y[:, -1])
 
-    def _avg_fidelity_AR(self, x: list[float]) -> float:
+    def _avg_fidelity_AR(
+        self, x: list[float], return_residuals: bool = False,
+    ) -> "float | tuple[float, dict[str, float]]":
         """Calculate average gate infidelity for AR parameters.
 
         Parameters
         ----------
         x : list of float
             AR parameters [ω/Ω_eff, A₁, φ₁, A₂, φ₂, δ/Ω_eff, T/T_scale, θ].
+        return_residuals : bool, default=False
+            If True, also return per-level residual populations.
 
         Returns
         -------
-        float
-            Average gate infidelity (1 - F).
+        float or (float, dict)
+            If return_residuals is False: average gate infidelity (1 - F).
+            If True: (infidelity, residuals) where residuals has keys
+            'e1', 'e2', 'e3', 'ryd', 'ryd_garb'.
         """
         theta = x[-1]
+
+        if return_residuals:
+            occ_ops = {
+                "e1": self._occ_operator(2),
+                "e2": self._occ_operator(3),
+                "e3": self._occ_operator(4),
+                "ryd": self._occ_operator(5),
+                "ryd_garb": self._occ_operator(6),
+            }
+            residuals_accum = {key: 0.0 for key in occ_ops}
 
         # Compute |01⟩ overlap
         ini_state = np.kron(
@@ -2617,6 +2925,10 @@ class CZGateSimulator:
         )
         a01 = np.exp(-1.0j * theta) * ini_state.conj().dot(res.T)
 
+        if return_residuals:
+            for key, op in occ_ops.items():
+                residuals_accum[key] += np.real(res.conj() @ op @ res)
+
         # Compute |11⟩ overlap
         ini_state = np.kron(
             [0, 1 + 0j, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
@@ -2633,11 +2945,21 @@ class CZGateSimulator:
         )
         a11 = np.exp(-2.0j * theta - 1.0j * np.pi) * ini_state.conj().dot(res.T)
 
+        if return_residuals:
+            for key, op in occ_ops.items():
+                residuals_accum[key] += np.real(res.conj() @ op @ res)
+
         # Average gate fidelity
         avg_F = (1 / 20) * (
             abs(1 + 2 * a01 + a11) ** 2 + 1 + 2 * abs(a01) ** 2 + abs(a11) ** 2
         )
-        return 1 - avg_F
+        infidelity = 1 - avg_F
+
+        if return_residuals:
+            residuals = {key: val / 2.0 for key, val in residuals_accum.items()}
+            return float(infidelity), residuals
+
+        return infidelity
 
     def _optimization_AR(self, x: list[float] | None = None, fid_type: str = "average") -> object:
         """Run Nelder-Mead optimization for AR pulse parameters.
