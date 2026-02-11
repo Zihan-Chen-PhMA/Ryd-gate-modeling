@@ -1,0 +1,243 @@
+"""Generate PDF error budget tables combining deterministic and MC results.
+
+Loads pre-computed MC data from data/ and computes deterministic errors
+on the fly. Produces one PDF per detuning sign.
+
+Usage:
+    uv run python scripts/generate_si_tables.py
+
+Prerequisites:
+    Run generate_mc_data.py first to create data/mc_*.txt files.
+"""
+import os
+os.environ["JAX_PLATFORMS"] = "cpu"
+
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from pathlib import Path
+from ryd_gate.ideal_cz import CZGateSimulator, MonteCarloResult
+
+X_TO_OUR_DARK = [
+    -0.6989301339711643, 1.0296229082590798, 0.3759232324550267,
+    1.5710180991068543, 1.4454279613697887, 1.3406239758422793
+]
+X_TO_OUR_BRIGHT = [
+    -1.7370398295694707, 0.7988774460188806, 2.3116588890406224,
+    0.5186261498956248, 0.900066116155231, 1.2415235064066774
+]
+
+
+def compute_deterministic_errors(sign, x):
+    """Compute deterministic error sources with 2-state average."""
+    errors = {}
+
+    # Rydberg decay
+    print("  Rydberg decay...")
+    sim_ryd = CZGateSimulator(
+        param_set="our", strategy="TO",
+        blackmanflag=True, detuning_sign=sign,
+        enable_rydberg_decay=True,
+    )
+    infid_ryd = sim_ryd.gate_fidelity(x)
+    budget_ryd = sim_ryd.error_budget(x)
+    errors["rydberg_decay"] = {
+        "infidelity": infid_ryd,
+        **budget_ryd["rydberg_decay"],
+    }
+
+    # Intermediate decay (full)
+    print("  Intermediate scattering (full)...")
+    sim_mid = CZGateSimulator(
+        param_set="our", strategy="TO",
+        blackmanflag=True, detuning_sign=sign,
+        enable_intermediate_decay=True,
+    )
+    infid_mid = sim_mid.gate_fidelity(x)
+    budget_mid = sim_mid.error_budget(x)
+
+    # Intermediate decay (no |0> scattering)
+    print("  Intermediate scattering (no |0>)...")
+    sim_mid_no0 = CZGateSimulator(
+        param_set="our", strategy="TO",
+        blackmanflag=True, detuning_sign=sign,
+        enable_intermediate_decay=True,
+        enable_0_scattering=False,
+    )
+    infid_mid_no0 = sim_mid_no0.gate_fidelity(x)
+    budget_mid_no0 = sim_mid_no0.error_budget(x)
+
+    # |0> scattering = difference (clamp to zero for interference artifacts)
+    bm = budget_mid["intermediate_decay"]
+    bn = budget_mid_no0["intermediate_decay"]
+    s0_xyz = max(0.0, bm["XYZ"] - bn["XYZ"])
+    s0_al = max(0.0, bm["AL"] - bn["AL"])
+    s0_lg = max(0.0, bm["LG"] - bn["LG"])
+    errors["scattering_0"] = {
+        "infidelity": max(0.0, infid_mid - infid_mid_no0),
+        "XYZ": s0_xyz,
+        "AL": s0_al,
+        "LG": s0_lg,
+    }
+
+    # |1> scattering = no-|0> case
+    errors["scattering_1"] = {
+        "infidelity": infid_mid_no0,
+        "XYZ": bn["XYZ"],
+        "AL": bn["AL"],
+        "LG": bn["LG"],
+    }
+
+    # Polarization leakage
+    print("  Polarization leakage...")
+    sim_pol = CZGateSimulator(
+        param_set="our", strategy="TO",
+        blackmanflag=True, detuning_sign=sign,
+        enable_polarization_leakage=True,
+    )
+    infid_pol = sim_pol.gate_fidelity(x)
+    budget_pol = sim_pol.error_budget(x)
+    errors["polarization_leakage"] = {
+        "infidelity": infid_pol,
+        **budget_pol["polarization_leakage"],
+    }
+
+    # All deterministic combined
+    print("  All deterministic...")
+    sim_all = CZGateSimulator(
+        param_set="our", strategy="TO",
+        blackmanflag=True, detuning_sign=sign,
+        enable_rydberg_decay=True,
+        enable_intermediate_decay=True,
+        enable_polarization_leakage=True,
+    )
+    infid_all = sim_all.gate_fidelity(x)
+    ba = sim_all.error_budget(x)
+    errors["all_deterministic"] = {
+        "infidelity": infid_all,
+        "XYZ": ba["rydberg_decay"]["XYZ"] + ba["intermediate_decay"]["XYZ"] + ba["polarization_leakage"]["XYZ"],
+        "AL": ba["rydberg_decay"]["AL"] + ba["intermediate_decay"]["AL"] + ba["polarization_leakage"]["AL"],
+        "LG": ba["rydberg_decay"]["LG"] + ba["intermediate_decay"]["LG"] + ba["polarization_leakage"]["LG"],
+    }
+
+    return errors
+
+
+def load_mc_results(label):
+    """Load MC results from data/ directory."""
+    results = {}
+    for key in ("dephasing", "position", "all"):
+        path = f"data/mc_{label}_{key}.txt"
+        if not Path(path).exists():
+            raise FileNotFoundError(f"{path} not found. Run generate_mc_data.py first.")
+        results[key] = MonteCarloResult.load_from_file(path)
+    return results
+
+
+def build_table_rows(det, mc):
+    """Build table rows as list of lists."""
+    n = mc["dephasing"].n_shots
+
+    def sem(std):
+        return std / np.sqrt(n)
+
+    def det_row(name, e):
+        coherent = e["infidelity"] - (e["XYZ"] + e["AL"] + e["LG"])
+        return [
+            name,
+            f"{e['infidelity']:.2e}",
+            f"{e['XYZ']*100:.4f}",
+            f"{e['AL']*100:.4f}",
+            f"{e['LG']*100:.4f}",
+            f"{coherent*100:.4f}" if abs(coherent) > 1e-10 else "0.0000",
+        ]
+
+    def mc_row(name, r):
+        return [
+            name,
+            f"{r.mean_infidelity:.2e} \u00b1 {sem(r.std_infidelity):.1e}",
+            f"{r.mean_branch_XYZ*100:.4f}",
+            f"{r.mean_branch_AL*100:.4f}",
+            f"{r.mean_branch_LG*100:.4f}",
+            f"{r.mean_branch_phase*100:.4f}",
+        ]
+
+    header = ["Error Source", "Infidelity", "XYZ (%)", "AL (%)", "LG (%)", "Coh/Phase (%)"]
+
+    rows = [
+        header,
+        ["DETERMINISTIC", "", "", "", "", ""],
+        det_row("  Rydberg decay", det["rydberg_decay"]),
+        det_row("  Scattering |0\u27e9", det["scattering_0"]),
+        det_row("  Scattering |1\u27e9", det["scattering_1"]),
+        det_row("  Polarization leakage", det["polarization_leakage"]),
+        det_row("  All deterministic", det["all_deterministic"]),
+        ["", "", "", "", "", ""],
+        ["STOCHASTIC (MC)", "", "", "", "", ""],
+        mc_row("  Dephasing (130 kHz)", mc["dephasing"]),
+        mc_row("  Position (70,70,130 nm)", mc["position"]),
+        ["", "", "", "", "", ""],
+        ["TOTAL", "", "", "", "", ""],
+        mc_row("  All errors combined", mc["all"]),
+    ]
+    return rows
+
+
+def render_pdf(rows, title, output_path):
+    """Render table rows to a PDF using matplotlib."""
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.axis("off")
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=0.95)
+
+    table = ax.table(cellText=rows, cellLoc="left", loc="center")
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1, 2.2)
+
+    # Header styling
+    for col in range(6):
+        cell = table[(0, col)]
+        cell.set_facecolor("#4472C4")
+        cell.set_text_props(weight="bold", color="white")
+
+    # Section header styling
+    for i, row in enumerate(rows):
+        if row[0] in ("DETERMINISTIC", "STOCHASTIC (MC)", "TOTAL"):
+            for col in range(6):
+                cell = table[(i, col)]
+                cell.set_facecolor("#D9E1F2")
+                cell.set_text_props(weight="bold")
+
+    for _, cell in table.get_celld().items():
+        cell.set_edgecolor("gray")
+        cell.set_linewidth(0.5)
+
+    plt.savefig(output_path, bbox_inches="tight", dpi=300)
+    plt.close()
+    print(f"  Saved {output_path}")
+
+
+def main():
+    for sign, label, x in [
+        (-1, "bright", X_TO_OUR_BRIGHT),
+        (1, "dark", X_TO_OUR_DARK),
+    ]:
+        print(f"\n{'='*60}")
+        print(f"  {label.upper()} DETUNING")
+        print(f"{'='*60}")
+
+        print("\nDeterministic errors:")
+        det = compute_deterministic_errors(sign, x)
+
+        print("\nLoading MC results:")
+        mc = load_mc_results(label)
+
+        rows = build_table_rows(det, mc)
+        render_pdf(rows, f"Error Budget: {label.capitalize()} Detuning", f"scripts/SI_Tables_{label}.pdf")
+
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()

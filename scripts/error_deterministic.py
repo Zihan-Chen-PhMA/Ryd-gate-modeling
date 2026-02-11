@@ -1,6 +1,6 @@
 """Deterministic error budget: each error source toggled independently.
 
-Computes SSS-averaged infidelity for bright/dark detuning with individual
+Computes 01/00-averaged infidelity for bright/dark detuning with individual
 error sources and XYZ/AL/LG branching decomposition:
 - Perfect gate (baseline)
 - Rydberg decay + branching
@@ -27,15 +27,12 @@ from ryd_gate.ideal_cz import CZGateSimulator
 # - T: Gate time
 
 X_TO_OUR_DARK = [
-   -0.9509172186259588, 1.105272315809505, 0.383911389220584,
-   1.2848721417313045, 1.3035218398648376, 1.246566016566724
+   -0.6989301339711643, 1.0296229082590798, 0.3759232324550267, 1.5710180991068543, 1.4454279613697887, 1.3406239758422793
 ]
 X_TO_OUR_BRIGHT = [
    -1.7370398295694707, 0.7988774460188806, 2.3116588890406224,
    0.5186261498956248, 0.900066116155231, 1.2415235064066774
 ]
-
-SSS_STATES = [f"SSS-{i}" for i in range(12)]
 
 
 def run_error_source(label, detuning_sign, x, **sim_kwargs):
@@ -49,7 +46,7 @@ def run_error_source(label, detuning_sign, x, **sim_kwargs):
         **sim_kwargs,
     )
     print(f"  Running {label}...")
-    infid = sim.gate_fidelity(x)
+    infid = sim.gate_fidelity(x, fid_type="average")
     print(f"    Infidelity: {infid:.6e}")
 
     # error_budget meaningful when any decay/leakage is enabled
