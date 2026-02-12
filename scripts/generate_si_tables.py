@@ -1,14 +1,18 @@
 """Generate PDF error budget tables combining deterministic and MC results.
 
-Loads pre-computed MC data from data/ and computes deterministic errors
-on the fly. Produces one PDF per detuning sign.
+Loads pre-computed data from data/ directory. Produces one PDF per
+detuning sign.
 
 Usage:
-    uv run python scripts/generate_si_tables.py
+    uv run python scripts/generate_si_tables.py [--recompute]
 
 Prerequisites:
-    Run generate_mc_data.py first to create data/mc_*.txt files.
+    Run generate_mc_data.py and generate_det_data.py first,
+    or pass --recompute to compute deterministic data on the fly.
 """
+import argparse
+import datetime
+import json
 import os
 os.environ["JAX_PLATFORMS"] = "cpu"
 
@@ -27,6 +31,24 @@ X_TO_OUR_DARK = [
 X_TO_OUR_BRIGHT = [
     0.6246672641243727, 1.2369507331752663, -0.470787497434612, 1.6547386752699043, 3.41960305947842, 1.3338111168065905
 ]
+
+
+def save_deterministic_errors(errors, filepath):
+    """Save deterministic error dict to a text file."""
+    with open(filepath, "w") as f:
+        f.write(f"# DeterministicErrors saved {datetime.datetime.now().isoformat()}\n")
+        f.write(f"# fid_type = sss\n")
+        f.write(f"# initial_states = SSS-0..SSS-11\n")
+        f.write(json.dumps(errors, indent=2))
+    print(f"  Saved {filepath}")
+
+
+def load_deterministic_errors(filepath):
+    """Load deterministic error dict from a text file."""
+    text = Path(filepath).read_text()
+    # Strip comment header lines
+    json_lines = [line for line in text.splitlines() if not line.startswith("#")]
+    return json.loads("\n".join(json_lines))
 
 
 def compute_deterministic_errors(sign, x):
@@ -162,16 +184,27 @@ def build_table_rows(det, mc):
 
     header = ["Error Source", "Infidelity", "XYZ", "AL", "LG", "Coh/Phase"]
 
-    # |0⟩ contribution annotation
+    # Intermediate decay: the |0⟩ scattering adds ground-state population
+    # loss that error_budget() cannot track (it only measures intermediate/
+    # Rydberg populations). This inflates the coherent residual. Subtract
+    # the |0⟩ extra infidelity so Coh/Phase reflects true coherent error.
     s0_extra = det["scattering_0_extra_infidelity"]
-    s0_note = f"    (|0\u27e9 contrib.: {s0_extra:.6e})"
+    e_mid = det["intermediate_decay"]
+    mid_coherent = e_mid["infidelity"] - (e_mid["XYZ"] + e_mid["AL"] + e_mid["LG"]) - s0_extra
+    mid_row = [
+        "  Intermediate decay\u2020",
+        f"{e_mid['infidelity']:.6e}",
+        f"{e_mid['XYZ']:.6e}",
+        f"{e_mid['AL']:.6e}",
+        f"{e_mid['LG']:.6e}",
+        f"{mid_coherent:.6e}" if abs(mid_coherent) > 1e-15 else "0.000000e+00",
+    ]
 
     rows = [
         header,
         ["DETERMINISTIC (SSS)", "", "", "", "", ""],
         det_row("  Rydberg decay", det["rydberg_decay"]),
-        det_row("  Intermediate decay", det["intermediate_decay"]),
-        [s0_note, "", "", "", "", ""],
+        mid_row,
         det_row("  Polarization leakage", det["polarization_leakage"]),
         det_row("  All deterministic", det["all_deterministic"]),
         ["", "", "", "", "", ""],
@@ -181,13 +214,19 @@ def build_table_rows(det, mc):
         ["", "", "", "", "", ""],
         ["TOTAL (MC, avg)*", "", "", "", "", ""],
         mc_row("  All errors combined", mc["all"]),
-        ["", "", "", "", "", ""],
-        ["* MC uses fid_type='average'; deterministic uses fid_type='sss'.", "", "", "", "", ""],
     ]
-    return rows
+
+    footnotes = [
+        f"\u2020 Intermediate decay includes full |0\u27e9+|1\u27e9 scattering; "
+        f"|0\u27e9 contribution to infidelity: {s0_extra:.6e} "
+        f"(ground-state loss, excluded from Coh/Phase)",
+        "* MC uses fid_type='average'; deterministic uses fid_type='sss'.",
+    ]
+
+    return rows, footnotes
 
 
-def render_pdf(rows, title, output_path):
+def render_pdf(rows, title, output_path, footnotes=None):
     """Render table rows to a PDF using matplotlib."""
     fig, ax = plt.subplots(figsize=(16, 8))
     ax.axis("off")
@@ -211,15 +250,16 @@ def render_pdf(rows, title, output_path):
                 cell = table[(i, col)]
                 cell.set_facecolor("#D9E1F2")
                 cell.set_text_props(weight="bold")
-        # Footnote styling
-        if row[0].startswith("*"):
-            for col in range(6):
-                cell = table[(i, col)]
-                cell.set_text_props(fontstyle="italic", fontsize=8)
 
     for _, cell in table.get_celld().items():
         cell.set_edgecolor("gray")
         cell.set_linewidth(0.5)
+
+    # Footnotes outside the table, bottom-left
+    if footnotes:
+        footnote_text = "\n".join(footnotes)
+        fig.text(0.05, 0.02, footnote_text, fontsize=8, fontstyle="italic",
+                 verticalalignment="bottom", wrap=True)
 
     plt.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close()
@@ -227,6 +267,11 @@ def render_pdf(rows, title, output_path):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--recompute", action="store_true",
+                        help="Recompute deterministic errors (slow) instead of loading cached data")
+    args = parser.parse_args()
+
     for sign, label, x in [
         # (-1, "bright", X_TO_OUR_BRIGHT),
         (1, "dark", X_TO_OUR_DARK),
@@ -235,14 +280,20 @@ def main():
         print(f"  {label.upper()} DETUNING")
         print(f"{'='*60}")
 
-        print("\nDeterministic errors:")
-        det = compute_deterministic_errors(sign, x)
+        det_path = f"data/det_{label}.json"
+        if args.recompute or not Path(det_path).exists():
+            print("\nComputing deterministic errors...")
+            det = compute_deterministic_errors(sign, x)
+            save_deterministic_errors(det, det_path)
+        else:
+            print(f"\nLoading deterministic errors from {det_path}")
+            det = load_deterministic_errors(det_path)
 
         print("\nLoading MC results:")
         mc = load_mc_results(label)
 
-        rows = build_table_rows(det, mc)
-        render_pdf(rows, f"Error Budget: {label.capitalize()} Detuning", f"scripts/SI_Tables_{label}.pdf")
+        rows, footnotes = build_table_rows(det, mc)
+        render_pdf(rows, f"Error Budget: {label.capitalize()} Detuning", f"scripts/SI_Tables_{label}.pdf", footnotes=footnotes)
 
     print("\nDone.")
 
