@@ -1,12 +1,10 @@
 """Calibration error proportion — parameter sensitivity analysis.
 
 For each of the 5 physical pulse parameters, find the shift Δp needed
-to increase average infidelity from ~5e-10 to 0.02.
+to increase average infidelity from ~1e-08 to 0.02.
 """
 
-import numpy as np
 from scipy.optimize import brentq
-
 from ryd_gate.ideal_cz import CZGateSimulator
 
 # Re-optimized dark CZ gate parameters from opt_dark.py
@@ -44,7 +42,7 @@ def infidelity_at_shift(idx: int, dp: float) -> float:
     """Return infidelity when parameter `idx` is shifted by `dp`."""
     x = list(X_TO_OUR_DARK)
     x[idx] += dp
-    return sim.gate_fidelity(x, fid_type="average")
+    return sim._gate_infidelity_single(x, fid_type="average")
 
 
 def find_dp(idx: int, sign: int, bracket_max: float = 5.0) -> float | None:
@@ -52,7 +50,6 @@ def find_dp(idx: int, sign: int, bracket_max: float = 5.0) -> float | None:
 
     Uses exponential bracketing then Brent's method.
     """
-    # Start with a small probe and grow until we overshoot the target
     dp_lo = 0.0
     dp_hi = 1e-6 * sign
     for _ in range(200):
@@ -66,7 +63,6 @@ def find_dp(idx: int, sign: int, bracket_max: float = 5.0) -> float | None:
     else:
         return None
 
-    # Brent's method between dp_lo and dp_hi
     def objective(dp: float) -> float:
         return infidelity_at_shift(idx, dp) - TARGET_INFIDELITY
 
@@ -104,5 +100,19 @@ for idx in [0, 1, 2, 3, 5]:
             print(f"  {PARAM_NAMES[idx]} Δp{label}: infidelity = {fid:.6e}")
 
 
-# === Results ===
-# (to be filled in after running)
+# === Results (baseline infidelity: 1.1093e-08) ===
+#
+# Parameter                       p_opt            Δp+            Δp-      |Δp+/p|      |Δp-/p|
+# ----------------------------------------------------------------------------------------------
+# A (cosine amplitude)       -0.69893013  +0.1010868545  -0.1019559188     0.144631     0.145874
+# ω/Ω_eff (mod. freq.)       1.02962291  +0.0389502768  -0.0380820784     0.037830     0.036986
+# φ₀ (initial phase)          0.37592323  +0.1881539146  -0.1881365619     0.500512     0.500465
+# δ/Ω_eff (chirp rate)        1.57101810  +0.0853681657  -0.0805273837     0.054339     0.051258
+# T/T_scale (gate time)       1.34062398  +0.0334203349  -0.0334940347     0.024929     0.024984
+#
+# Sensitivity ranking (most sensitive first, by avg |Δp/p|):
+#   1. T/T_scale (gate time)    ~2.5%
+#   2. ω/Ω_eff (mod. freq.)    ~3.7%
+#   3. δ/Ω_eff (chirp rate)    ~5.3%
+#   4. A (cosine amplitude)    ~14.5%
+#   5. φ₀ (initial phase)     ~50.0%

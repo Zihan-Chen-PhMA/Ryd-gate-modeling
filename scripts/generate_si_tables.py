@@ -19,13 +19,13 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from ryd_gate.ideal_cz import CZGateSimulator, MonteCarloResult
 
+SSS_12_STATES = [f"SSS-{i}" for i in range(12)]
+
 X_TO_OUR_DARK = [
-    -0.6989301339711643, 1.0296229082590798, 0.3759232324550267,
-    1.5710180991068543, 1.4454279613697887, 1.3406239758422793
+    -0.6990251940088914, 1.0294930712188455, 0.37642793463018853, 1.5710847832834478, 1.4454415553284314, 1.340639491094446
 ]
 X_TO_OUR_BRIGHT = [
-    -1.7370398295694707, 0.7988774460188806, 2.3116588890406224,
-    0.5186261498956248, 0.900066116155231, 1.2415235064066774
+    0.6246672641243727, 1.2369507331752663, -0.470787497434612, 1.6547386752699043, 3.41960305947842, 1.3338111168065905
 ]
 
 
@@ -40,8 +40,8 @@ def compute_deterministic_errors(sign, x):
         blackmanflag=True, detuning_sign=sign,
         enable_rydberg_decay=True,
     )
-    infid_ryd = sim_ryd.gate_fidelity(x)
-    budget_ryd = sim_ryd.error_budget(x)
+    infid_ryd = sim_ryd.gate_fidelity(x,fid_type="sss")
+    budget_ryd = sim_ryd.error_budget(x,initial_states=SSS_12_STATES)
     errors["rydberg_decay"] = {
         "infidelity": infid_ryd,
         **budget_ryd["rydberg_decay"],
@@ -54,10 +54,11 @@ def compute_deterministic_errors(sign, x):
         blackmanflag=True, detuning_sign=sign,
         enable_intermediate_decay=True,
     )
-    infid_mid = sim_mid.gate_fidelity(x)
-    budget_mid = sim_mid.error_budget(x)
+    infid_mid = sim_mid.gate_fidelity(x,fid_type="sss")
+    budget_mid = sim_mid.error_budget(x,initial_states=SSS_12_STATES)
 
     # Intermediate decay (no |0> scattering)
+    # set `enable_0_scattering=False` only makes the population that excited from 0-state donot go through the decay process
     print("  Intermediate scattering (no |0>)...")
     sim_mid_no0 = CZGateSimulator(
         param_set="our", strategy="TO",
@@ -65,12 +66,19 @@ def compute_deterministic_errors(sign, x):
         enable_intermediate_decay=True,
         enable_0_scattering=False,
     )
-    infid_mid_no0 = sim_mid_no0.gate_fidelity(x)
-    budget_mid_no0 = sim_mid_no0.error_budget(x)
+    infid_mid_no0 = sim_mid_no0.gate_fidelity(x,fid_type="sss")
+    budget_mid_no0 = sim_mid_no0.error_budget(x,initial_states=SSS_12_STATES)
+    bn = budget_mid_no0["intermediate_decay"]
+    # |1> scattering = no-|0> case
+    errors["scattering_1"] = {
+        "infidelity": infid_mid_no0,
+        "XYZ": bn["XYZ"],
+        "AL": bn["AL"],
+        "LG": bn["LG"],
+    }
 
     # |0> scattering = difference (clamp to zero for interference artifacts)
     bm = budget_mid["intermediate_decay"]
-    bn = budget_mid_no0["intermediate_decay"]
     s0_xyz = max(0.0, bm["XYZ"] - bn["XYZ"])
     s0_al = max(0.0, bm["AL"] - bn["AL"])
     s0_lg = max(0.0, bm["LG"] - bn["LG"])
@@ -79,14 +87,6 @@ def compute_deterministic_errors(sign, x):
         "XYZ": s0_xyz,
         "AL": s0_al,
         "LG": s0_lg,
-    }
-
-    # |1> scattering = no-|0> case
-    errors["scattering_1"] = {
-        "infidelity": infid_mid_no0,
-        "XYZ": bn["XYZ"],
-        "AL": bn["AL"],
-        "LG": bn["LG"],
     }
 
     # Polarization leakage
@@ -220,7 +220,7 @@ def render_pdf(rows, title, output_path):
 
 def main():
     for sign, label, x in [
-        (-1, "bright", X_TO_OUR_BRIGHT),
+        # (-1, "bright", X_TO_OUR_BRIGHT),
         (1, "dark", X_TO_OUR_DARK),
     ]:
         print(f"\n{'='*60}")
