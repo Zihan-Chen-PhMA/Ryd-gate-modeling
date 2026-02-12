@@ -2404,6 +2404,24 @@ class CZGateSimulator:
             }
             residuals_accum = {key: 0.0 for key in occ_ops}
 
+        # Compute |00⟩ → |00⟩ overlap (ideal CZ leaves |00⟩ unchanged)
+        ini_state_00 = np.kron(
+            [1 + 0j, 0, 0, 0, 0, 0, 0], [1 + 0j, 0, 0, 0, 0, 0, 0]
+        )
+        res = self._get_gate_result_TO(
+            phase_amp=x[0],
+            omega=x[1] * self.rabi_eff,
+            phase_init=x[2],
+            delta=x[3] * self.rabi_eff,
+            t_gate=x[5] * self.time_scale,
+            state_mat=ini_state_00,
+        )
+        a00 = ini_state_00.conj().dot(res.T)
+
+        if return_residuals:
+            for key, op in occ_ops.items():
+                residuals_accum[key] += np.real(res.conj() @ op @ res)
+
         # Compute |01⟩ → |01⟩ overlap
         ini_state = np.kron(
             [1 + 0j, 0, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
@@ -2440,12 +2458,13 @@ class CZGateSimulator:
             for key, op in occ_ops.items():
                 residuals_accum[key] += np.real(res.conj() @ op @ res)
 
-        # Average gate fidelity formula
-        avg_F = (1 / 20) * (abs(1 + 2 * a01 + a11) ** 2 + 1 + 2 * abs(a01) ** 2 + abs(a11) ** 2)
+        # Average gate fidelity (Nielsen formula): F = (|Tr(U†_ideal U)|² + d) / (d²+d)
+        # Tr = a00 + 2*a01 + a11 (a10 = a01 by symmetry)
+        avg_F = (1 / 20) * (abs(a00 + 2 * a01 + a11) ** 2 + abs(a00) ** 2 + 2 * abs(a01) ** 2 + abs(a11) ** 2)
         infidelity = 1 - avg_F
 
         if return_residuals:
-            residuals = {key: val / 2.0 for key, val in residuals_accum.items()}
+            residuals = {key: val / 3.0 for key, val in residuals_accum.items()}
             return float(infidelity), residuals
 
         return infidelity
@@ -2758,6 +2777,26 @@ class CZGateSimulator:
             }
             residuals_accum = {key: 0.0 for key in occ_ops}
 
+        # Compute |00⟩ → |00⟩ overlap (ideal CZ leaves |00⟩ unchanged)
+        ini_state_00 = np.kron(
+            [1 + 0j, 0, 0, 0, 0, 0, 0], [1 + 0j, 0, 0, 0, 0, 0, 0]
+        )
+        res = self._get_gate_result_AR(
+            omega=x[0] * self.rabi_eff,
+            phase_amp1=x[1],
+            phase_init1=x[2],
+            phase_amp2=x[3],
+            phase_init2=x[4],
+            delta=x[5] * self.rabi_eff,
+            t_gate=x[6] * self.time_scale,
+            state_mat=ini_state_00,
+        )
+        a00 = ini_state_00.conj().dot(res.T)
+
+        if return_residuals:
+            for key, op in occ_ops.items():
+                residuals_accum[key] += np.real(res.conj() @ op @ res)
+
         # Compute |01⟩ overlap
         ini_state = np.kron(
             [1 + 0j, 0, 0, 0, 0, 0, 0], [0, 1 + 0j, 0, 0, 0, 0, 0]
@@ -2798,14 +2837,14 @@ class CZGateSimulator:
             for key, op in occ_ops.items():
                 residuals_accum[key] += np.real(res.conj() @ op @ res)
 
-        # Average gate fidelity
+        # Average gate fidelity (Nielsen formula)
         avg_F = (1 / 20) * (
-            abs(1 + 2 * a01 + a11) ** 2 + 1 + 2 * abs(a01) ** 2 + abs(a11) ** 2
+            abs(a00 + 2 * a01 + a11) ** 2 + abs(a00) ** 2 + 2 * abs(a01) ** 2 + abs(a11) ** 2
         )
         infidelity = 1 - avg_F
 
         if return_residuals:
-            residuals = {key: val / 2.0 for key, val in residuals_accum.items()}
+            residuals = {key: val / 3.0 for key, val in residuals_accum.items()}
             return float(infidelity), residuals
 
         return infidelity

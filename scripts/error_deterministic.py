@@ -27,7 +27,7 @@ from ryd_gate.ideal_cz import CZGateSimulator
 # - T: Gate time
 
 X_TO_OUR_DARK = [
-   -0.6989301339711643, 1.0296229082590798, 0.3759232324550267, 1.5710180991068543, 1.4454279613697887, 1.3406239758422793
+-0.6989301339711643, 1.0296229082590798, 0.3759232324550267, 1.5710180991068543, 1.4454279613697887, 1.3406239758422793
 ]
 X_TO_OUR_BRIGHT = [
    -1.7370398295694707, 0.7988774460188806, 2.3116588890406224,
@@ -66,8 +66,10 @@ def run_error_source(label, detuning_sign, x, **sim_kwargs):
 def main():
     results = {}
 
-    for sign, sign_label, x in [(-1, "bright", X_TO_OUR_BRIGHT),
-                                  (1, "dark", X_TO_OUR_DARK)]:
+    for sign, sign_label, x in [
+        # (-1, "bright", X_TO_OUR_BRIGHT),
+        (1, "dark", X_TO_OUR_DARK),
+                                  ]:
         print(f"\n{'='*70}")
         print(f"  Detuning: {sign_label}")
         print(f"{'='*70}")

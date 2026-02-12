@@ -16,9 +16,11 @@ from ryd_gate.ideal_cz import CZGateSimulator
 X_TO_OUR_DARK = [
 -0.6989301339711643, 1.0296229082590798, 0.3759232324550267, 1.5710180991068543, 1.4454279613697887, 1.3406239758422793
 ]
+
+
 sim_dark = CZGateSimulator(
         param_set="our", strategy="TO",
-        blackmanflag=True, detunin_sign=1,
+        blackmanflag=True, detuning_sign=1,
         enable_rydberg_decay=False, enable_intermediate_decay=False,
         enable_polarization_leakage=False,
     ) 
