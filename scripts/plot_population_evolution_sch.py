@@ -30,7 +30,7 @@ from ryd_gate.ideal_cz import CZGateSimulator
 #     - θ: Single-qubit Z rotation angle
 #     - T: Gate time
 # The protocol φ(t) = A·cos(ωt + φ₀) + δ·t with
-X_TO = [-0.64168872, 1.14372811, 0.35715965, 1.51843443, 2.96448688, 1.21214853]
+X_TO = [ -0.6990251940088914, 1.0294930712188455, 0.37642793463018853, 1.5710847832834478, 1.4454415553284314, 1.340639491094446]
 
 N_SSS = 12
 

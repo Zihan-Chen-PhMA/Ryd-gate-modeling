@@ -1,6 +1,6 @@
 """Deterministic error budget: each error source toggled independently.
 
-Computes 01/00-averaged infidelity for bright/dark detuning with individual
+Computes SSS-averaged infidelity for bright/dark detuning with individual
 error sources and XYZ/AL/LG branching decomposition:
 - Perfect gate (baseline)
 - Rydberg decay + branching
@@ -13,6 +13,8 @@ import os
 os.environ["JAX_PLATFORMS"] = "cpu"
 
 from ryd_gate.ideal_cz import CZGateSimulator
+
+SSS_12_STATES = [f"SSS-{i}" for i in range(12)]
 
 # **Time-Optimal (TO) Strategy**
 
@@ -45,7 +47,7 @@ def run_error_source(label, detuning_sign, x, **sim_kwargs):
         **sim_kwargs,
     )
     print(f"  Running {label}...")
-    infid = sim.gate_fidelity(x, fid_type="average")
+    infid = sim.gate_fidelity(x, fid_type="sss")
     print(f"    Infidelity: {infid:.6e}")
 
     # error_budget meaningful when any decay/leakage is enabled
@@ -54,7 +56,7 @@ def run_error_source(label, detuning_sign, x, **sim_kwargs):
                 sim_kwargs.get("enable_polarization_leakage", False)
     budget = None
     if has_decay:
-        budget = sim.error_budget(x)
+        budget = sim.error_budget(x, initial_states=SSS_12_STATES)
         for source, vals in budget.items():
             print(f"    {source}: total={vals['total']:.6e}  "
                   f"XYZ={vals['XYZ']:.6e}  AL={vals['AL']:.6e}  LG={vals['LG']:.6e}")
@@ -139,7 +141,7 @@ def main():
           f" {'XYZ':>12} {'AL':>12} {'LG':>12}")
     print(f"{'-'*w}")
 
-    for sl in ["bright", "dark"]:
+    for sl in results:
         r = results[sl]
         baseline = r["perfect"]
 
@@ -151,24 +153,14 @@ def main():
         print(f"{'Rydberg decay (' + sl + ')':<35} {r['rydberg']:>12.6e} {contrib:>+12.6e}"
               f" {b['XYZ']:>12.6e} {b['AL']:>12.6e} {b['LG']:>12.6e}")
 
-        # Intermediate decay
+        # Intermediate decay (full 0+1 scattering)
         contrib = r["intermediate"] - baseline
         b = r["budget_mid"]["intermediate_decay"]
         print(f"{'Intermediate decay (' + sl + ')':<35} {r['intermediate']:>12.6e} {contrib:>+12.6e}"
               f" {b['XYZ']:>12.6e} {b['AL']:>12.6e} {b['LG']:>12.6e}")
-
-        # Scattering decomposition: XYZ/AL/LG via budget differencing
-        b_mid_full = r["budget_mid"]["intermediate_decay"]
-        b_mid_ns = r["budget_mid_no_scat"]["intermediate_decay"]
+        # |0⟩ contribution: extra infidelity only (no valid XYZ/AL/LG decomposition)
         scat_0 = r["intermediate"] - r["mid_no_scat"]
-        scat0_xyz = b_mid_full["XYZ"] - b_mid_ns["XYZ"]
-        scat0_al = b_mid_full["AL"] - b_mid_ns["AL"]
-        scat0_lg = b_mid_full["LG"] - b_mid_ns["LG"]
-        print(f"{'  Scattering |0> (' + sl + ')':<35} {scat_0:>12.6e} {'':>12}"
-              f" {scat0_xyz:>12.6e} {scat0_al:>12.6e} {scat0_lg:>12.6e}")
-        scat1 = r["mid_no_scat"] - baseline
-        print(f"{'  Scattering |1> (' + sl + ')':<35} {scat1:>12.6e} {'':>12}"
-              f" {b_mid_ns['XYZ']:>12.6e} {b_mid_ns['AL']:>12.6e} {b_mid_ns['LG']:>12.6e}")
+        print(f"{'  (|0> contrib.)':<35} {scat_0:>12.6e}")
 
         # Polarization leakage
         contrib = r["polarization"] - baseline

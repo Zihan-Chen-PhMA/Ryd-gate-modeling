@@ -47,8 +47,8 @@ def compute_deterministic_errors(sign, x):
         **budget_ryd["rydberg_decay"],
     }
 
-    # Intermediate decay (full)
-    print("  Intermediate scattering (full)...")
+    # Intermediate decay (full 0+1 scattering)
+    print("  Intermediate decay (full)...")
     sim_mid = CZGateSimulator(
         param_set="our", strategy="TO",
         blackmanflag=True, detuning_sign=sign,
@@ -56,10 +56,19 @@ def compute_deterministic_errors(sign, x):
     )
     infid_mid = sim_mid.gate_fidelity(x,fid_type="sss")
     budget_mid = sim_mid.error_budget(x,initial_states=SSS_12_STATES)
+    bm = budget_mid["intermediate_decay"]
+    errors["intermediate_decay"] = {
+        "infidelity": infid_mid,
+        "XYZ": bm["XYZ"],
+        "AL": bm["AL"],
+        "LG": bm["LG"],
+    }
 
-    # Intermediate decay (no |0> scattering)
-    # set `enable_0_scattering=False` only makes the population that excited from 0-state donot go through the decay process
-    print("  Intermediate scattering (no |0>)...")
+    # |0⟩ contribution: extra infidelity from enabling |0⟩ scattering.
+    # enable_0_scattering toggles a ground-state light-shift decay term,
+    # not intermediate-state population routing, so only the total infidelity
+    # difference is meaningful (no XYZ/AL/LG decomposition).
+    print("  Intermediate decay (no |0> scattering)...")
     sim_mid_no0 = CZGateSimulator(
         param_set="our", strategy="TO",
         blackmanflag=True, detuning_sign=sign,
@@ -67,27 +76,7 @@ def compute_deterministic_errors(sign, x):
         enable_0_scattering=False,
     )
     infid_mid_no0 = sim_mid_no0.gate_fidelity(x,fid_type="sss")
-    budget_mid_no0 = sim_mid_no0.error_budget(x,initial_states=SSS_12_STATES)
-    bn = budget_mid_no0["intermediate_decay"]
-    # |1> scattering = no-|0> case
-    errors["scattering_1"] = {
-        "infidelity": infid_mid_no0,
-        "XYZ": bn["XYZ"],
-        "AL": bn["AL"],
-        "LG": bn["LG"],
-    }
-
-    # |0> scattering = difference (clamp to zero for interference artifacts)
-    bm = budget_mid["intermediate_decay"]
-    s0_xyz = max(0.0, bm["XYZ"] - bn["XYZ"])
-    s0_al = max(0.0, bm["AL"] - bn["AL"])
-    s0_lg = max(0.0, bm["LG"] - bn["LG"])
-    errors["scattering_0"] = {
-        "infidelity": max(0.0, infid_mid - infid_mid_no0),
-        "XYZ": s0_xyz,
-        "AL": s0_al,
-        "LG": s0_lg,
-    }
+    errors["scattering_0_extra_infidelity"] = max(0.0, infid_mid - infid_mid_no0)
 
     # Polarization leakage
     print("  Polarization leakage...")
@@ -96,8 +85,8 @@ def compute_deterministic_errors(sign, x):
         blackmanflag=True, detuning_sign=sign,
         enable_polarization_leakage=True,
     )
-    infid_pol = sim_pol.gate_fidelity(x)
-    budget_pol = sim_pol.error_budget(x)
+    infid_pol = sim_pol.gate_fidelity(x,fid_type="sss")
+    budget_pol = sim_pol.error_budget(x,initial_states=SSS_12_STATES)
     errors["polarization_leakage"] = {
         "infidelity": infid_pol,
         **budget_pol["polarization_leakage"],
@@ -112,8 +101,8 @@ def compute_deterministic_errors(sign, x):
         enable_intermediate_decay=True,
         enable_polarization_leakage=True,
     )
-    infid_all = sim_all.gate_fidelity(x)
-    ba = sim_all.error_budget(x)
+    infid_all = sim_all.gate_fidelity(x,fid_type="sss")
+    ba = sim_all.error_budget(x,initial_states=SSS_12_STATES)
     errors["all_deterministic"] = {
         "infidelity": infid_all,
         "XYZ": ba["rydberg_decay"]["XYZ"] + ba["intermediate_decay"]["XYZ"] + ba["polarization_leakage"]["XYZ"],
@@ -143,50 +132,64 @@ def build_table_rows(det, mc):
         return std / np.sqrt(n)
 
     def det_row(name, e):
-        coherent = e["infidelity"] - (e["XYZ"] + e["AL"] + e["LG"])
-        return [
-            name,
-            f"{e['infidelity']:.2e}",
-            f"{e['XYZ']*100:.4f}",
-            f"{e['AL']*100:.4f}",
-            f"{e['LG']*100:.4f}",
-            f"{coherent*100:.4f}" if abs(coherent) > 1e-10 else "0.0000",
-        ]
+        has_branching = e["XYZ"] is not None
+        if has_branching:
+            coherent = e["infidelity"] - (e["XYZ"] + e["AL"] + e["LG"])
+            return [
+                name,
+                f"{e['infidelity']:.6e}",
+                f"{e['XYZ']:.6e}",
+                f"{e['AL']:.6e}",
+                f"{e['LG']:.6e}",
+                f"{coherent:.6e}" if abs(coherent) > 1e-15 else "0.000000e+00",
+            ]
+        else:
+            return [
+                name,
+                f"{e['infidelity']:.6e}",
+                "\u2014", "\u2014", "\u2014", "\u2014",
+            ]
 
     def mc_row(name, r):
         return [
             name,
-            f"{r.mean_infidelity:.2e} \u00b1 {sem(r.std_infidelity):.1e}",
-            f"{r.mean_branch_XYZ*100:.4f}",
-            f"{r.mean_branch_AL*100:.4f}",
-            f"{r.mean_branch_LG*100:.4f}",
-            f"{r.mean_branch_phase*100:.4f}",
+            f"{r.mean_infidelity:.6e} \u00b1 {sem(r.std_infidelity):.2e}",
+            f"{r.mean_branch_XYZ:.6e}",
+            f"{r.mean_branch_AL:.6e}",
+            f"{r.mean_branch_LG:.6e}",
+            f"{r.mean_branch_phase:.6e}",
         ]
 
-    header = ["Error Source", "Infidelity", "XYZ (%)", "AL (%)", "LG (%)", "Coh/Phase (%)"]
+    header = ["Error Source", "Infidelity", "XYZ", "AL", "LG", "Coh/Phase"]
+
+    # |0⟩ contribution annotation
+    s0_extra = det["scattering_0_extra_infidelity"]
+    s0_note = f"    (|0\u27e9 contrib.: {s0_extra:.6e})"
 
     rows = [
         header,
-        ["DETERMINISTIC", "", "", "", "", ""],
+        ["DETERMINISTIC (SSS)", "", "", "", "", ""],
         det_row("  Rydberg decay", det["rydberg_decay"]),
-        det_row("  Scattering |0\u27e9", det["scattering_0"]),
-        det_row("  Scattering |1\u27e9", det["scattering_1"]),
+        det_row("  Intermediate decay", det["intermediate_decay"]),
+        [s0_note, "", "", "", "", ""],
         det_row("  Polarization leakage", det["polarization_leakage"]),
         det_row("  All deterministic", det["all_deterministic"]),
         ["", "", "", "", "", ""],
-        ["STOCHASTIC (MC)", "", "", "", "", ""],
+        ["STOCHASTIC (MC, avg)*", "", "", "", "", ""],
         mc_row("  Dephasing (130 kHz)", mc["dephasing"]),
         mc_row("  Position (70,70,130 nm)", mc["position"]),
         ["", "", "", "", "", ""],
-        ["TOTAL", "", "", "", "", ""],
+        ["TOTAL (MC, avg)*", "", "", "", "", ""],
         mc_row("  All errors combined", mc["all"]),
+        ["", "", "", "", "", ""],
+        ["* MC uses fid_type='average'; deterministic uses fid_type='sss'.", "", "", "", "", ""],
     ]
     return rows
 
 
 def render_pdf(rows, title, output_path):
     """Render table rows to a PDF using matplotlib."""
-    fig, ax = plt.subplots(figsize=(12, 8))
+    fig, ax = plt.subplots(figsize=(16, 8))
     ax.axis("off")
     fig.suptitle(title, fontsize=14, fontweight="bold", y=0.95)
 
@@ -203,11 +206,16 @@ def render_pdf(rows, title, output_path):
 
     # Section header styling
     for i, row in enumerate(rows):
-        if row[0] in ("DETERMINISTIC", "STOCHASTIC (MC)", "TOTAL"):
+        if row[0] in ("DETERMINISTIC (SSS)", "STOCHASTIC (MC, avg)*", "TOTAL (MC, avg)*"):
             for col in range(6):
                 cell = table[(i, col)]
                 cell.set_facecolor("#D9E1F2")
                 cell.set_text_props(weight="bold")
+        # Footnote styling
+        if row[0].startswith("*"):
+            for col in range(6):
+                cell = table[(i, col)]
+                cell.set_text_props(fontstyle="italic", fontsize=8)
 
     for _, cell in table.get_celld().items():
         cell.set_edgecolor("gray")
