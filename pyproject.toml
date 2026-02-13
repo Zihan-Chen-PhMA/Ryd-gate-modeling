@@ -14,14 +14,10 @@ authors = [
 ]
 dependencies = [
     "numpy",
-    "jax",
-    "jaxlib",
-    "jaxopt",
     "qutip",
     "scipy",
     "matplotlib",
     "arc-alkali-rydberg-calculator",
-    "sympy",
 ]
 
 [project.optional-dependencies]
@@ -55,7 +51,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"src/ryd_gate/full_error_model.py" = ["F401", "F841", "E261", "E251", "E231", "E303", "E302", "W291", "W293", "I001"]
 "src/ryd_gate/ideal_cz.py" = ["F401", "F811", "F841", "E261", "E251", "E231", "E303", "E302", "W291", "W293", "W605", "I001"]
 
 [tool.pytest.ini_options]

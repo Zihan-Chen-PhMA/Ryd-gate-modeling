@@ -447,35 +447,6 @@ class TestStoredParameterWorkflow:
 
 
 # ==================================================================
-# TESTS FOR PULSE OPTIMIZER MODULE (from original test file)
-# ==================================================================
-
-
-def test_pulse_optimizer_instantiation():
-    """PulseOptimizer should instantiate for all supported pulse types."""
-    from ryd_gate.noise import PulseOptimizer
-
-    for pt in ["TO", "AR", "DR", "SSR"]:
-        opt = PulseOptimizer(pulse_type=pt)
-        assert opt.pulse_type == pt
-
-
-def test_pulse_optimizer_invalid_type():
-    """PulseOptimizer should raise ValueError for invalid pulse type."""
-    from ryd_gate.noise import PulseOptimizer
-
-    with pytest.raises(ValueError):
-        PulseOptimizer(pulse_type="INVALID")
-
-
-def test_analytical_pulse_shape():
-    """Analytical pulse shape should return correct value at t=0."""
-    from ryd_gate.noise import PulseOptimizer
-
-    val = PulseOptimizer._analytical_pulse_shape(0, A=1, B=0, w=1, p1=0, p2=0, C=0, D=5)
-    assert val == pytest.approx(5.0)
-
-
 # ==================================================================
 # TESTS FOR MONTE CARLO SIMULATION
 # ==================================================================
@@ -696,9 +667,9 @@ class TestIndependentErrorFlags:
         sim = CZGateSimulator(
             param_set="our", strategy="TO", blackmanflag=True,
         )
-        # Optimized TO params (re-optimized with always-on |0⟩ light shift)
-        x = [-0.9509172186259588, 1.105272315809505, 0.383911389220584,
-             1.2848721417313045, 1.3035218398648376, 1.246566016566724]
+        # Dark-detuning TO params (optimized with full a00 fidelity formula)
+        x = [-0.6989301339711643, 1.0296229082590798, 0.3759232324550267,
+             1.5710180991068543, 1.4454279613697887, 1.3406239758422793]
         infidelity = sim.gate_fidelity(x)
         assert infidelity < 1e-6, f"Infidelity {infidelity} too large for all-flags-off gate"
 
@@ -779,35 +750,6 @@ class TestBranchingRatios:
             br = sim._mid_branch[F]
             total = br["to_0"] + br["to_1"] + br["to_L0"] + br["to_L1"]
             assert total == pytest.approx(1.0, abs=1e-6), f"F={F} ratios sum to {total}"
-
-    def test_rydberg_branching_cross_validation(self):
-        """Rydberg branching ratios should match full_error_model.py."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-        from ryd_gate.full_error_model import jax_atom_Evolution
-
-        sim = CZGateSimulator(param_set="our", strategy="TO")
-        model = jax_atom_Evolution(ryd_decay=False, mid_decay=False)
-
-        assert sim._ryd_branch["to_0"] == pytest.approx(model.branch_ratio_0, abs=1e-6)
-        assert sim._ryd_branch["to_1"] == pytest.approx(model.branch_ratio_1, abs=1e-6)
-        assert sim._ryd_branch["to_L0"] == pytest.approx(model.branch_ratio_L0, abs=1e-6)
-        assert sim._ryd_branch["to_L1"] == pytest.approx(model.branch_ratio_L1, abs=1e-6)
-
-    def test_mid_branching_cross_validation(self):
-        """Mid-state branching ratios should match full_error_model.py."""
-        from ryd_gate.ideal_cz import CZGateSimulator
-        from ryd_gate.full_error_model import jax_atom_Evolution
-
-        sim = CZGateSimulator(param_set="our", strategy="TO")
-        model = jax_atom_Evolution(ryd_decay=False, mid_decay=False)
-
-        for F, label in [(1, "e1"), (2, "e2"), (3, "e3")]:
-            br_sim = sim._mid_branch[F]
-            r0, r1, rL0, rL1 = model.mid_branch_ratio(label)
-            assert br_sim["to_0"] == pytest.approx(r0, abs=1e-6), f"F={F} to_0 mismatch"
-            assert br_sim["to_1"] == pytest.approx(r1, abs=1e-6), f"F={F} to_1 mismatch"
-            assert br_sim["to_L0"] == pytest.approx(rL0, abs=1e-6), f"F={F} to_L0 mismatch"
-            assert br_sim["to_L1"] == pytest.approx(rL1, abs=1e-6), f"F={F} to_L1 mismatch"
 
     def test_error_budget_non_negative(self):
         """Error budget values should all be non-negative."""
@@ -905,8 +847,8 @@ class TestBranchingRatios:
 
 
 X_TO_OUR = [
-    -0.9509172186259588, 1.105272315809505, 0.383911389220584,
-    1.2848721417313045, 1.3035218398648376, 1.246566016566724,
+    -0.6989301339711643, 1.0296229082590798, 0.3759232324550267,
+    1.5710180991068543, 1.4454279613697887, 1.3406239758422793,
 ]
 
 

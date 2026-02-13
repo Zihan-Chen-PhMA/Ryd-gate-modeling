@@ -6,28 +6,14 @@ This document describes the `CZGateSimulator` class in `ideal_cz.py`, which prov
 
 ### When to Use This Module
 
-| Use Case | Recommended Module |
-|----------|-------------------|
-| Fast pulse optimization | `ideal_cz.py` (this module) |
-| Understanding ideal gate dynamics | `ideal_cz.py` |
-| Comparing TO vs AR pulse strategies | `ideal_cz.py` |
-| Full decoherence modeling | `full_error_model.py` |
-| Thermal effects analysis | `full_error_model.py` |
-| Leakage channel quantification | `full_error_model.py` |
-
-### Comparison: Schrödinger vs Master Equation Solvers
-
-| Feature | `CZGateSimulator` | `jax_atom_Evolution` |
-|---------|-------------------|---------------------|
-| **Equation** | Schrödinger (pure state) | Lindblad master equation |
-| **State representation** | 49-dim vector | 100×100 density matrix |
-| **Levels per atom** | 7 | 10 |
-| **Decay modeling** | Imaginary energy shift | Full Lindblad operators |
-| **Leakage states** | No | Yes (L0, L1) |
-| **BBR transitions** | No | Yes (r→rP) |
-| **Backend** | SciPy `solve_ivp` | JAX `odeint` |
-| **GPU acceleration** | No | Yes |
-| **Typical use** | Pulse optimization | Error budget analysis |
+| Use Case | Supported |
+|----------|-----------|
+| Fast pulse optimization | Yes |
+| Understanding ideal gate dynamics | Yes |
+| Comparing TO vs AR pulse strategies | Yes |
+| Spontaneous decay (imaginary energy shift) | Yes |
+| Monte Carlo dephasing / position noise | Yes |
+| Bloch sphere visualization | Yes (TO only) |
 
 ## Class Reference
 
@@ -64,6 +50,7 @@ CZGateSimulator(
 
 | Method | Description |
 |--------|-------------|
+| `setup_protocol(x)` | Store pulse parameters for repeated use |
 | `optimize(x_initial)` | Run pulse parameter optimization |
 | `gate_fidelity(x, fid_type)` | Calculate average gate infidelity |
 | `diagnose_plot(x, initial_state)` | Plot population evolution |
@@ -217,21 +204,9 @@ print(f"TO infidelity: {result_TO.fun:.6f}")
 print(f"AR infidelity: {result_AR.fun:.6f}")
 ```
 
-### Bloch Sphere Visualization (TO only)
-
-```python
-sim = CZGateSimulator(strategy='TO')
-x_opt = [0.1122, 1.0431, -0.726, 0.0, 0.452, 1.219]
-
-# Generate Bloch sphere plots for |01⟩→|0r⟩ and |11⟩→|W⟩ transitions
-sim.plot_bloch(x_opt, save=True)
-# Saves: 10-r0_Bloch.png, 11-W_Bloch.png
-```
-
 ### Including Decay Effects
 
 ```python
-# With spontaneous emission (imaginary energy shift approximation)
 sim_decay = CZGateSimulator(
     param_set='our', strategy='AR',
     enable_rydberg_decay=True, enable_intermediate_decay=True,
@@ -241,8 +216,6 @@ sim_decay = CZGateSimulator(
 x0 = [1.0, 0.1, 0.0, 0.05, 0.0, 0.0, 1.0, 0.0]
 infid = sim_decay.gate_fidelity(x0)
 print(f"Infidelity with decay: {infid:.6f}")
-
-# Note: For accurate decay modeling, use full_error_model.py instead
 ```
 
 ## Hamiltonian Structure
@@ -264,7 +237,7 @@ The Clebsch-Gordan coefficients from ARC library account for the hyperfine struc
 
 ## Notes
 
-1. **Imaginary energy approximation**: When `enable_rydberg_decay` or `enable_intermediate_decay` is True, decay is modeled as imaginary energy shifts in the diagonal Hamiltonian. This is approximate; for accurate decay/leakage modeling, use `full_error_model.py`.
+1. **Imaginary energy approximation**: When `enable_rydberg_decay` or `enable_intermediate_decay` is True, decay is modeled as imaginary energy shifts in the diagonal Hamiltonian. This is an approximate treatment suitable for estimating decay contributions to infidelity.
 
 2. **Optimization algorithm**: Uses SciPy's Nelder-Mead optimizer with `fatol=1e-9`. The callback writes intermediate parameters to `opt_hf_new.txt`.
 
@@ -274,6 +247,5 @@ The Clebsch-Gordan coefficients from ARC library account for the hyperfine struc
 
 ## See Also
 
-- `full_error_model.py` - Full density matrix simulation with Lindblad decay
-- `noise_analysis.md` - Error budget analysis using the full model
-- `thermal_effects_analysis.md` - Temperature dependence of gate fidelity
+- `docs/error_budget_methodology.md` - Error budget decomposition
+- `docs/validation.md` - Test suite documentation

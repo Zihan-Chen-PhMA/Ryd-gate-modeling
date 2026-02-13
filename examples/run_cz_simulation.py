@@ -1,55 +1,32 @@
-"""Example: run a CZ gate simulation using the full error model.
+"""Example: run a CZ gate simulation using the Schrödinger solver.
 
-This script reproduces the CZ fidelity calculation from the research notebook.
-It requires JAX and ARC to be installed.
+This script demonstrates a basic fidelity calculation and diagnostics
+using the CZGateSimulator from ideal_cz.py.
 """
 
-import jax.numpy as jnp
-from jax import config
+from ryd_gate.ideal_cz import CZGateSimulator
 
-config.update("jax_enable_x64", True)
+# --- Time-Optimal (TO) strategy ---
+sim = CZGateSimulator(param_set='our', strategy='TO')
 
-from ryd_gate.full_error_model import jax_atom_Evolution
+# Known good TO pulse parameters: [A, ω/Ω_eff, φ₀, δ/Ω_eff, θ, T/T_scale]
+X_TO = [0.1122, 1.0431, -0.72565603, 0.0, 0.452, 1.219096]
 
-model = jax_atom_Evolution()
+infidelity = sim.gate_fidelity(X_TO)
+print(f"TO gate infidelity: {infidelity:.2e}")
 
-Omega = model.rabi_eff / (2 * jnp.pi)
+# --- Amplitude-Robust (AR) strategy ---
+sim_AR = CZGateSimulator(param_set='our', strategy='AR')
 
-tf = 1.219096
-A = 0.1122
-omegaf = 1.0431
-phi0 = -0.72565603
-deltaf = 0
+# Known good AR pulse parameters
+X_AR = [0.85973359, 0.39146974, 0.99181418, 0.1924498,
+        -1.17123748, -0.00826712, 1.67429728, 0.28527346]
 
-amp_420 = lambda t: 1
-phase_420 = lambda t: 2 * jnp.pi * (A * jnp.cos(2 * jnp.pi * omegaf * Omega * t - phi0) + deltaf * Omega * t)
-amp_1013 = lambda t: 1
+infidelity_AR = sim_AR.gate_fidelity(X_AR)
+print(f"AR gate infidelity: {infidelity_AR:.2e}")
 
-tlist = jnp.linspace(0, tf / Omega, 2)
-
-psi0_list = model.SSS_initial_state_list
-sol = model.integrate_rho_multi_jax(
-    tlist,
-    amp_420,
-    phase_420,
-    amp_1013,
-    [model.psi_to_rho(psi0) for psi0 in psi0_list],
-)
-
-sol_mid = jnp.array([model.mid_state_decay(sol[n, -1]) for n in range(12)])
-
-fid_raw_mean = 0
-theta_mean = 0
-for n in range(12):
-    fid_raw, theta = model.CZ_fidelity(sol_mid[n], psi0_list[n])
-    fid_raw_mean += fid_raw / 12
-    if n in [0, 1, 2, 3, 6, 7, 8, 9]:
-        theta_mean += theta / 8
-
-fid_mean = 0
-for n in range(12):
-    fid, _ = model.CZ_fidelity(sol_mid[n], psi0_list[n], theta_mean)
-    fid_mean += fid / 12
-
-print(f"Mean raw fidelity: {fid_raw_mean:.6f}")
-print(f"Mean fidelity (mean theta): {fid_mean:.6f}")
+# --- Population diagnostics ---
+print("\nPopulation diagnostics for |11⟩ (TO):")
+mid_pop, ryd_pop, ryd_garb_pop = sim.diagnose_run(X_TO, '11')
+print(f"  Peak intermediate population: {mid_pop.max():.4f}")
+print(f"  Peak Rydberg population:      {ryd_pop.max():.4f}")

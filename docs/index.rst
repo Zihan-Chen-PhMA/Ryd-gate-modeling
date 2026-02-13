@@ -9,8 +9,7 @@ Simulation and optimization of Rydberg-atom entangling gates for neutral-atom qu
 
    getting_started
    schrodinger_solver
-   noise_analysis
-   thermal_effects_analysis
+   error_budget_methodology
    validation
 
 .. toctree::
