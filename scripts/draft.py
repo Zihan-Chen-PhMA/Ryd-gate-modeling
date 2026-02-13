@@ -4,7 +4,6 @@ For each of the 5 physical pulse parameters, find the shift Δp needed
 to increase average infidelity from ~1e-08 to 0.02.
 """
 
-from scipy.optimize import brentq
 from ryd_gate.ideal_cz import CZGateSimulator
 
 # Re-optimized dark CZ gate parameters from opt_dark.py
@@ -45,31 +44,71 @@ def infidelity_at_shift(idx: int, dp: float) -> float:
     return sim._gate_infidelity_single(x, fid_type="average")
 
 
-def find_dp(idx: int, sign: int, bracket_max: float = 5.0) -> float | None:
+def find_dp(idx: int, sign: int, tol: float = 1e-12) -> float | None:
     """Find Δp (with given sign) that yields TARGET_INFIDELITY.
 
-    Uses exponential bracketing then Brent's method.
+    Strategy: double dp until overshoot, then bisect.
     """
-    dp_lo = 0.0
-    dp_hi = 1e-6 * sign
-    for _ in range(200):
-        fid = infidelity_at_shift(idx, dp_hi)
-        if fid >= TARGET_INFIDELITY:
+    dp = 1e-3 * sign
+    lo = 0.0
+    # Phase 1: double until we overshoot
+    for _ in range(60):
+        if infidelity_at_shift(idx, dp) >= TARGET_INFIDELITY:
             break
-        dp_lo = dp_hi
-        dp_hi *= 2
-        if abs(dp_hi) > bracket_max:
+        dp *= 2
+        if abs(dp) > 10.0:
             return None
     else:
         return None
+    hi = dp
+    # Phase 2: bisect between lo and hi
+    while abs(hi - lo) > tol:
+        mid = (lo + hi) / 2
+        if infidelity_at_shift(idx, mid) < TARGET_INFIDELITY:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
 
-    def objective(dp: float) -> float:
-        return infidelity_at_shift(idx, dp) - TARGET_INFIDELITY
 
-    try:
-        return brentq(objective, dp_lo, dp_hi, xtol=1e-12, rtol=1e-12)
-    except ValueError:
+SIMULTANEOUS_TARGET = 0.001  # 0.1% infidelity for simultaneous analysis
+PARAM_INDICES = [0, 1, 2, 3, 5]
+
+
+def infidelity_all_shifted(eps: float, sign: int) -> float:
+    """Return infidelity when all 5 params shift by sign * eps * |p_opt|."""
+    x = list(X_TO_OUR_DARK)
+    for idx in PARAM_INDICES:
+        x[idx] += sign * eps * abs(X_TO_OUR_DARK[idx])
+    return sim._gate_infidelity_single(x, fid_type="average")
+
+
+def find_simultaneous_eps(sign: int, tol: float = 1e-14) -> float | None:
+    """Find relative fraction eps where all params shift by sign*eps*|p| hits SIMULTANEOUS_TARGET.
+
+    Strategy: double eps until overshoot, then bisect.
+    """
+    eps = 1e-3
+    lo = 0.0
+    # Phase 1: double until we overshoot
+    for _ in range(60):
+        if infidelity_all_shifted(eps, sign) >= SIMULTANEOUS_TARGET:
+            break
+        lo = eps
+        eps *= 2
+        if eps > 5.0:
+            return None
+    else:
         return None
+    hi = eps
+    # Phase 2: bisect between lo and hi
+    while hi - lo > tol:
+        mid = (lo + hi) / 2
+        if infidelity_all_shifted(mid, sign) < SIMULTANEOUS_TARGET:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
 
 
 # --- Run sensitivity sweep ---
@@ -99,6 +138,23 @@ for idx in [0, 1, 2, 3, 5]:
             fid = infidelity_at_shift(idx, dp)
             print(f"  {PARAM_NAMES[idx]} Δp{label}: infidelity = {fid:.6e}")
 
+# --- Simultaneous sensitivity analysis ---
+print(f"\n{'='*80}")
+print("Simultaneous analysis: all 5 params shift by ε·|p_opt|, target infidelity = 0.1%")
+print(f"{'='*80}\n")
+
+for sign, label in [(+1, "all increase (+ε)"), (-1, "all decrease (-ε)")]:
+    eps = find_simultaneous_eps(sign)
+    if eps is not None:
+        fid = infidelity_all_shifted(eps, sign)
+        print(f"  {label}: ε = {eps:.6e} ({eps*100:.4f}%), infidelity = {fid:.6e}")
+        print(f"    Absolute shifts:")
+        for idx in PARAM_INDICES:
+            dp = sign * eps * abs(X_TO_OUR_DARK[idx])
+            print(f"      {PARAM_NAMES[idx]}: {X_TO_OUR_DARK[idx]:+.10f} → {X_TO_OUR_DARK[idx]+dp:+.10f} (Δ = {dp:+.6e})")
+    else:
+        print(f"  {label}: no solution found")
+
 
 # === Results (baseline infidelity: 1.1093e-08) ===
 #
@@ -116,3 +172,15 @@ for idx in [0, 1, 2, 3, 5]:
 #   3. δ/Ω_eff (chirp rate)    ~5.3%
 #   4. A (cosine amplitude)    ~14.5%
 #   5. φ₀ (initial phase)     ~50.0%
+#
+# === Simultaneous results: all 5 params shift by ε·|p_opt|, target = 0.1% ===
+#   all increase (+ε): ε = 2.991e-03 (0.299%)
+#   all decrease (-ε): ε = 2.984e-03 (0.298%)
+#   → ~0.3% uniform relative drift pushes infidelity from ~1e-08 to 0.1%
+#
+# === Simultaneous results: all 5 params shift by ε·|p_opt|, target = 0.1% ===
+#
+#   all increase (+ε): ε = 2.990649e-03 (0.2991%), infidelity = 1.000000e-03
+#   all decrease (-ε): ε = 2.984375e-03 (0.2984%), infidelity = 1.000000e-03
+#
+#   → ~0.3% uniform relative drift in all params simultaneously → 0.1% infidelity
