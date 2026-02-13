@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ryd-gate"
+version = "0.1.0"
+description = "Simulation and optimization of Rydberg-atom entangling gates"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Siyuan Chen"},
+]
+dependencies = [
+    "numpy",
+    "qutip",
+    "scipy",
+    "matplotlib",
+    "arc-alkali-rydberg-calculator",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "sphinx",
+    "sphinx-rtd-theme",
+    "myst-parser",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",   # line too long (research code has long expressions)
+    "E741",   # ambiguous variable name (physics uses I, l, etc.)
+    "F403",   # star imports (arc, qutip use this pattern)
+    "F405",   # may be undefined from star import
+    "W291",   # trailing whitespace
+    "W293",   # blank line whitespace
+    "E731",   # lambda assignment
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/ryd_gate/ideal_cz.py" = ["F401", "F811", "F841", "E261", "E251", "E231", "E303", "E302", "W291", "W293", "W605", "I001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
